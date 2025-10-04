@@ -9,6 +9,7 @@ import {
   setUserPresence,
   getExistingChatRoom,
   listenToWaitingPool,
+  isUserInActiveChat, // Import new function
 } from "../firebase/firestore"
 
 export default function Waiting({ user, userProfile, onChatStarted, onCancel }) {
@@ -25,6 +26,17 @@ export default function Waiting({ user, userProfile, onChatStarted, onCancel }) 
     const initializeWaiting = async () => {
       try {
         console.log("[v0] Initializing waiting for user:", user.uid)
+
+        const alreadyInChat = await isUserInActiveChat(user.uid)
+        if (alreadyInChat) {
+          console.log("[v0] User is already in an active chat, redirecting...")
+          const existingChat = await getActiveChatRoom(user.uid)
+          if (existingChat && isActive) {
+            hasMatched = true
+            onChatStarted(existingChat.id)
+            return
+          }
+        }
 
         // Check if user already has an active chat
         const existingChat = await getActiveChatRoom(user.uid)
@@ -88,6 +100,18 @@ export default function Waiting({ user, userProfile, onChatStarted, onCancel }) 
               setStatus("Partner found! Connecting...")
 
               try {
+                const [currentUserInChat, otherUserInChat] = await Promise.all([
+                  isUserInActiveChat(user.uid),
+                  isUserInActiveChat(otherUser.uid),
+                ])
+
+                if (currentUserInChat || otherUserInChat) {
+                  console.log("[v0] One of the users is already in a chat, aborting match")
+                  matchingAttempted = false
+                  setStatus("Looking for a chat partner...")
+                  return
+                }
+
                 // Check if chat room already exists between these two users
                 const existingRoom = await getExistingChatRoom(user.uid, otherUser.uid)
                 if (existingRoom) {
@@ -171,76 +195,17 @@ export default function Waiting({ user, userProfile, onChatStarted, onCancel }) 
   }
 
   return (
-    <div style={styles.container}>
-      <div style={styles.card}>
-        <div style={styles.spinner} />
-        <h2 style={styles.title}>{status}</h2>
-        <p style={styles.subtitle}>
+    <div className="waiting-container">
+      <div className="waiting-card">
+        <div className="waiting-spinner" />
+        <h2 className="waiting-title">{status}</h2>
+        <p className="waiting-subtitle">
           {waitingCount > 1 ? `${waitingCount} users in waiting pool` : "Waiting for other users..."}
         </p>
-        <button onClick={handleCancel} style={styles.cancelButton}>
+        <button onClick={handleCancel} className="waiting-cancel-btn">
           Cancel
         </button>
       </div>
     </div>
   )
-}
-
-const styles = {
-  container: {
-    display: "flex",
-    justifyContent: "center",
-    alignItems: "center",
-    minHeight: "100vh",
-    background: "linear-gradient(135deg, #667eea 0%, #764ba2 100%)",
-  },
-  card: {
-    background: "white",
-    borderRadius: "16px",
-    padding: "48px",
-    textAlign: "center",
-    boxShadow: "0 10px 40px rgba(0,0,0,0.1)",
-    maxWidth: "400px",
-  },
-  spinner: {
-    width: "60px",
-    height: "60px",
-    border: "4px solid #f3f3f3",
-    borderTop: "4px solid #667eea",
-    borderRadius: "50%",
-    animation: "spin 1s linear infinite",
-    margin: "0 auto 24px",
-  },
-  title: {
-    fontSize: "24px",
-    fontWeight: "bold",
-    color: "#333",
-    marginBottom: "12px",
-  },
-  subtitle: {
-    color: "#666",
-    marginBottom: "32px",
-  },
-  cancelButton: {
-    padding: "12px 32px",
-    background: "#e74c3c",
-    color: "white",
-    border: "none",
-    borderRadius: "8px",
-    fontSize: "16px",
-    fontWeight: "600",
-    cursor: "pointer",
-  },
-}
-
-// Add keyframe animation
-if (typeof document !== "undefined") {
-  const style = document.createElement("style")
-  style.textContent = `
-    @keyframes spin {
-      0% { transform: rotate(0deg); }
-      100% { transform: rotate(360deg); }
-    }
-  `
-  document.head.appendChild(style)
 }

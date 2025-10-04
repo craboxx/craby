@@ -21,6 +21,7 @@ export default function ChatRoom({ user, userProfile, chatRoomId, onChatEnded, o
   const [partnerId, setPartnerId] = useState("")
   const [requestSent, setRequestSent] = useState(false)
   const [partnerLeft, setPartnerLeft] = useState(false)
+  const [showMobileMenu, setShowMobileMenu] = useState(false)
   const messagesEndRef = useRef(null)
   const endChatClickedRef = useRef(false)
 
@@ -151,64 +152,91 @@ export default function ChatRoom({ user, userProfile, chatRoomId, onChatEnded, o
   }
 
   return (
-    <div style={styles.container}>
-      <div style={styles.chatContainer}>
-        <div style={styles.header}>
+    <div className="chat-container">
+      <div className="chat-mobile-nav">
+        <button onClick={() => setShowMobileMenu(!showMobileMenu)} className="chat-mobile-menu-btn">
+          ☰
+        </button>
+        <h2 className="chat-mobile-title">
+          {partnerName}
+          {partnerLeft && <span className="chat-left-indicator"> (Left)</span>}
+        </h2>
+      </div>
+
+      <div className="chat-box">
+        <div className="chat-header">
           <div>
-            <h2 style={styles.title}>
+            <h2 className="chat-title">
               Chatting with {partnerName}
-              {partnerLeft && <span style={styles.leftIndicator}> (Left)</span>}
+              {partnerLeft && <span className="chat-left-indicator"> (Left)</span>}
             </h2>
-            <p style={styles.subtitle}>Be respectful and have fun!</p>
+            <p className="chat-subtitle">Be respectful and have fun!</p>
           </div>
-          <div style={styles.headerButtons}>
-            <button onClick={handleSendFriendRequest} disabled={requestSent || partnerLeft} style={styles.friendButton}>
+          <div className="chat-header-buttons">
+            <button onClick={handleSendFriendRequest} disabled={requestSent || partnerLeft} className="chat-friend-btn">
               {requestSent ? "Request Sent" : "Add Friend"}
             </button>
-            <button onClick={handleReportUser} disabled={partnerLeft} style={styles.reportButton}>
+            <button onClick={handleReportUser} disabled={partnerLeft} className="chat-report-btn">
               Report
             </button>
-            <button onClick={handleBlockUser} disabled={partnerLeft} style={styles.blockButton}>
+            <button onClick={handleBlockUser} disabled={partnerLeft} className="chat-block-btn">
               Block
             </button>
-            <button onClick={handleSkip} disabled={partnerLeft} style={styles.skipButton}>
+            <button onClick={handleSkip} disabled={partnerLeft} className="chat-skip-btn">
               Skip
             </button>
-            <button onClick={handleEndChat} style={styles.endButton}>
+            <button onClick={handleEndChat} className="chat-end-btn">
               End Chat
             </button>
           </div>
         </div>
 
+        {showMobileMenu && (
+          <div className="chat-mobile-menu">
+            <button
+              onClick={handleSendFriendRequest}
+              disabled={requestSent || partnerLeft}
+              className="chat-mobile-menu-item"
+            >
+              {requestSent ? "Request Sent" : "Add Friend"}
+            </button>
+            <button onClick={handleReportUser} disabled={partnerLeft} className="chat-mobile-menu-item">
+              Report
+            </button>
+            <button onClick={handleBlockUser} disabled={partnerLeft} className="chat-mobile-menu-item">
+              Block
+            </button>
+            <button onClick={handleSkip} disabled={partnerLeft} className="chat-mobile-menu-item">
+              Skip
+            </button>
+            <button onClick={handleEndChat} className="chat-mobile-menu-item">
+              End Chat
+            </button>
+          </div>
+        )}
+
         {partnerLeft && (
-          <div style={styles.warningBar}>
+          <div className="chat-warning-bar">
             Your chat partner has left the conversation. Returning to waiting queue...
           </div>
         )}
 
-        <div style={styles.messagesContainer}>
+        <div className="chat-messages">
           {messages.length === 0 ? (
-            <div style={styles.emptyState}>
+            <div className="chat-empty-state">
               <p>No messages yet. Say hi!</p>
             </div>
           ) : (
             messages.map((msg) => (
               <div
                 key={msg.id}
-                style={{
-                  ...styles.messageWrapper,
-                  justifyContent: msg.senderId === user.uid ? "flex-end" : "flex-start",
-                }}
+                className={`chat-message-wrapper ${msg.senderId === user.uid ? "chat-message-right" : "chat-message-left"}`}
               >
                 <div
-                  style={{
-                    ...styles.message,
-                    background: msg.senderId === user.uid ? "#667eea" : "#f0f0f0",
-                    color: msg.senderId === user.uid ? "white" : "#333",
-                  }}
+                  className={`chat-message ${msg.senderId === user.uid ? "chat-message-sent" : "chat-message-received"}`}
                 >
-                  <div style={styles.messageSender}>{msg.senderName}</div>
-                  <div style={styles.messageText}>{msg.message}</div>
+                  <div className="chat-message-sender">{msg.senderName}</div>
+                  <div className="chat-message-text">{msg.message}</div>
                 </div>
               </div>
             ))
@@ -216,187 +244,20 @@ export default function ChatRoom({ user, userProfile, chatRoomId, onChatEnded, o
           <div ref={messagesEndRef} />
         </div>
 
-        <form onSubmit={handleSendMessage} style={styles.inputContainer}>
+        <form onSubmit={handleSendMessage} className="chat-input-container">
           <input
             type="text"
             value={newMessage}
             onChange={(e) => setNewMessage(e.target.value)}
             placeholder={partnerLeft ? "Chat ended" : "Type a message..."}
-            style={styles.input}
+            className="chat-input"
             disabled={partnerLeft}
           />
-          <button type="submit" style={styles.sendButton} disabled={partnerLeft}>
+          <button type="submit" className="chat-send-btn" disabled={partnerLeft}>
             Send
           </button>
         </form>
       </div>
     </div>
   )
-}
-
-const styles = {
-  container: {
-    minHeight: "100vh",
-    background: "linear-gradient(135deg, #667eea 0%, #764ba2 100%)",
-    display: "flex",
-    justifyContent: "center",
-    alignItems: "center",
-    padding: "20px",
-  },
-  chatContainer: {
-    width: "100%",
-    maxWidth: "900px",
-    height: "80vh",
-    background: "white",
-    borderRadius: "16px",
-    boxShadow: "0 10px 40px rgba(0,0,0,0.2)",
-    display: "flex",
-    flexDirection: "column",
-    overflow: "hidden",
-  },
-  header: {
-    padding: "20px 24px",
-    borderBottom: "2px solid #f0f0f0",
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",
-    background: "#fafafa",
-  },
-  title: {
-    fontSize: "20px",
-    fontWeight: "bold",
-    color: "#333",
-    margin: "0",
-  },
-  leftIndicator: {
-    color: "#e74c3c",
-    fontSize: "16px",
-  },
-  subtitle: {
-    fontSize: "14px",
-    color: "#666",
-    margin: "4px 0 0 0",
-  },
-  headerButtons: {
-    display: "flex",
-    gap: "8px",
-  },
-  friendButton: {
-    padding: "8px 16px",
-    background: "#2ecc71",
-    color: "white",
-    border: "none",
-    borderRadius: "6px",
-    fontSize: "14px",
-    fontWeight: "600",
-    cursor: "pointer",
-  },
-  reportButton: {
-    padding: "8px 16px",
-    background: "#e67e22",
-    color: "white",
-    border: "none",
-    borderRadius: "6px",
-    fontSize: "14px",
-    fontWeight: "600",
-    cursor: "pointer",
-  },
-  blockButton: {
-    padding: "8px 16px",
-    background: "#95a5a6",
-    color: "white",
-    border: "none",
-    borderRadius: "6px",
-    fontSize: "14px",
-    fontWeight: "600",
-    cursor: "pointer",
-  },
-  skipButton: {
-    padding: "8px 16px",
-    background: "#f39c12",
-    color: "white",
-    border: "none",
-    borderRadius: "6px",
-    fontSize: "14px",
-    fontWeight: "600",
-    cursor: "pointer",
-  },
-  endButton: {
-    padding: "8px 16px",
-    background: "#e74c3c",
-    color: "white",
-    border: "none",
-    borderRadius: "6px",
-    fontSize: "14px",
-    fontWeight: "600",
-    cursor: "pointer",
-  },
-  warningBar: {
-    background: "#e74c3c",
-    color: "white",
-    padding: "10px",
-    textAlign: "center",
-    fontSize: "14px",
-    fontWeight: "600",
-  },
-  messagesContainer: {
-    flex: "1",
-    overflowY: "auto",
-    padding: "24px",
-    display: "flex",
-    flexDirection: "column",
-    gap: "12px",
-  },
-  emptyState: {
-    display: "flex",
-    justifyContent: "center",
-    alignItems: "center",
-    height: "100%",
-    color: "#999",
-  },
-  messageWrapper: {
-    display: "flex",
-    width: "100%",
-  },
-  message: {
-    maxWidth: "70%",
-    padding: "12px 16px",
-    borderRadius: "12px",
-    wordWrap: "break-word",
-  },
-  messageSender: {
-    fontSize: "12px",
-    fontWeight: "600",
-    marginBottom: "4px",
-    opacity: "0.8",
-  },
-  messageText: {
-    fontSize: "15px",
-    lineHeight: "1.4",
-  },
-  inputContainer: {
-    padding: "20px 24px",
-    borderTop: "2px solid #f0f0f0",
-    display: "flex",
-    gap: "12px",
-    background: "#fafafa",
-  },
-  input: {
-    flex: "1",
-    padding: "12px 16px",
-    border: "2px solid #e0e0e0",
-    borderRadius: "8px",
-    fontSize: "15px",
-    outline: "none",
-  },
-  sendButton: {
-    padding: "12px 32px",
-    background: "#667eea",
-    color: "white",
-    border: "none",
-    borderRadius: "8px",
-    fontSize: "15px",
-    fontWeight: "600",
-    cursor: "pointer",
-  },
 }

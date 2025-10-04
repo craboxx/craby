@@ -138,7 +138,25 @@ export const createChatRoomAtomic = async (user1Id, user2Id, user1Name, user2Nam
   }
 }
 
+// Check if user is currently in an active chat
+export const isUserInActiveChat = async (uid) => {
+  const q = query(
+    collection(db, "chatRooms"),
+    where("participants", "array-contains", uid),
+    where("active", "==", true),
+  )
+
+  const snapshot = await getDocs(q)
+  return !snapshot.empty
+}
+
 export const findAndMatchWaitingUser = async (currentUserId, currentUsername, blockedUserIds = []) => {
+  const alreadyInChat = await isUserInActiveChat(currentUserId)
+  if (alreadyInChat) {
+    console.log("[v0] User is already in an active chat, cannot match")
+    return null
+  }
+
   const waitingQuery = query(collection(db, "waitingPool"), orderBy("timestamp"))
   const snapshot = await getDocs(waitingQuery)
 
@@ -155,6 +173,12 @@ export const findAndMatchWaitingUser = async (currentUserId, currentUsername, bl
     // Skip blocked users
     if (blockedUserIds.includes(waitingUser.uid)) continue
     if ((waitingUser.blockedUsers || []).includes(currentUserId)) continue
+
+    const waitingUserInChat = await isUserInActiveChat(waitingUser.uid)
+    if (waitingUserInChat) {
+      console.log("[v0] Waiting user is already in chat, skipping:", waitingUser.username)
+      continue
+    }
 
     // Check if already in a chat with this user
     const existingRoom = await getExistingChatRoom(currentUserId, waitingUser.uid)

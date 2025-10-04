@@ -20,7 +20,8 @@ export default function Home({ user, userProfile, onEnterChat, onViewFriends, on
   const [blockedUsers, setBlockedUsers] = useState([])
   const [friends, setFriends] = useState([])
   const [friendStatuses, setFriendStatuses] = useState({})
-  const [activeTab, setActiveTab] = useState("online") // "online", "friends", "blocked"
+  const [activeTab, setActiveTab] = useState("online")
+  const [showMobileMenu, setShowMobileMenu] = useState(false)
 
   const handleUnblockUser = async (blockedUid) => {
     try {
@@ -132,87 +133,96 @@ export default function Home({ user, userProfile, onEnterChat, onViewFriends, on
   }
 
   return (
-    <div style={styles.container}>
-      <div style={styles.header}>
-        <div>
-          <h1 style={styles.title}>CRABY</h1>
-          <p style={styles.username}>Welcome, {userProfile.username}</p>
-        </div>
-        <div style={styles.headerButtons}>
-          <button onClick={onViewFriends} style={styles.friendsButton}>
+    <div className="home-container">
+      <div className="home-mobile-nav">
+        <h1 className="home-mobile-title">CRABY</h1>
+        <button onClick={() => setShowMobileMenu(!showMobileMenu)} className="home-mobile-menu-btn">
+          ☰
+        </button>
+      </div>
+
+      {showMobileMenu && (
+        <div className="home-mobile-menu">
+          <button onClick={onViewFriends} className="home-mobile-menu-item">
             Friends
           </button>
-          <button onClick={onLogout} style={styles.logoutButton}>
+          <button onClick={onLogout} className="home-mobile-menu-item">
+            Logout
+          </button>
+        </div>
+      )}
+
+      <div className="home-header">
+        <div>
+          <h1 className="home-title">CRABY</h1>
+          <p className="home-username">Welcome, {userProfile.username}</p>
+        </div>
+        <div className="home-header-buttons">
+          <button onClick={onViewFriends} className="home-friends-btn">
+            Friends
+          </button>
+          <button onClick={onLogout} className="home-logout-btn">
             Logout
           </button>
         </div>
       </div>
 
-      <div style={styles.content}>
-        <div style={styles.mainSection}>
-          <div style={styles.card}>
-            <h2 style={styles.cardTitle}>Start Random Chat</h2>
-            <p style={styles.cardDescription}>Connect with random people around the world</p>
-            <button onClick={onEnterChat} style={styles.enterButton}>
+      <div className="home-content">
+        <div className="home-main-section">
+          <div className="home-card">
+            <h2 className="home-card-title">Start Random Chat</h2>
+            <p className="home-card-description">Connect with random people around the world</p>
+            <button onClick={onEnterChat} className="home-enter-btn">
               Enter to Chat
             </button>
           </div>
 
-          <div style={styles.statsCard}>
-            <div style={styles.statItem}>
-              <div style={styles.statNumber}>{onlineUsers.length}</div>
-              <div style={styles.statLabel}>Users Online</div>
+          <div className="home-stats-card">
+            <div className="home-stat-item">
+              <div className="home-stat-number">{onlineUsers.length}</div>
+              <div className="home-stat-label">Users Online</div>
             </div>
           </div>
         </div>
 
-        <div style={styles.sidebar}>
-          <div style={styles.tabs}>
+        <div className="home-sidebar">
+          <div className="home-tabs">
             <button
               onClick={() => setActiveTab("online")}
-              style={{
-                ...styles.tab,
-                ...(activeTab === "online" ? styles.activeTab : {}),
-              }}
+              className={`home-tab ${activeTab === "online" ? "home-tab-active" : ""}`}
             >
               Online
             </button>
             <button
               onClick={() => setActiveTab("friends")}
-              style={{
-                ...styles.tab,
-                ...(activeTab === "friends" ? styles.activeTab : {}),
-              }}
+              className={`home-tab ${activeTab === "friends" ? "home-tab-active" : ""}`}
             >
               Friends
             </button>
             <button
               onClick={() => setActiveTab("blocked")}
-              style={{
-                ...styles.tab,
-                ...(activeTab === "blocked" ? styles.activeTab : {}),
-              }}
+              className={`home-tab ${activeTab === "blocked" ? "home-tab-active" : ""}`}
             >
               Blocked
             </button>
           </div>
 
           {activeTab === "online" && (
-            <div style={styles.tabContent}>
-              <h3 style={styles.sidebarTitle}>Online Users</h3>
-              <div style={styles.userList}>
+            <div className="home-tab-content">
+              <h3 className="home-sidebar-title">Online Users</h3>
+              <div className="home-user-list">
                 {onlineUserProfiles.length === 0 ? (
-                  <p style={styles.emptyText}>No other users online</p>
+                  <p className="home-empty-text">No other users online</p>
                 ) : (
                   onlineUserProfiles.map((profile) => (
-                    <div key={profile.uid} style={styles.userItem}>
-                      <div style={styles.userInfo}>
-                        <div style={{ ...styles.statusDot, background: getStatusColor(profile.status) }} />
-                        <span style={styles.userUsername}>{profile.username}</span>
+                    <div key={profile.uid} className="home-user-item">
+                      <div className="home-user-info">
+                        <div className="home-status-dot" style={{ background: getStatusColor(profile.status) }} />
+                        <span className="home-user-username">{profile.username}</span>
                       </div>
                       <button
                         onClick={() => handleSendChatRequest(profile.uid, profile.username)}
-                        style={styles.chatButton}
+                        className="home-chat-btn"
                       >
                         Chat
                       </button>
@@ -224,27 +234,25 @@ export default function Home({ user, userProfile, onEnterChat, onViewFriends, on
           )}
 
           {activeTab === "friends" && (
-            <div style={styles.tabContent}>
-              <h3 style={styles.sidebarTitle}>Friends</h3>
-              <div style={styles.userList}>
+            <div className="home-tab-content">
+              <h3 className="home-sidebar-title">Friends</h3>
+              <div className="home-user-list">
                 {friends.length === 0 ? (
-                  <p style={styles.emptyText}>No friends yet</p>
+                  <p className="home-empty-text">No friends yet</p>
                 ) : (
                   friends.map((friend) => (
-                    <div key={friend.id} style={styles.userItem}>
-                      <div style={styles.userInfo}>
+                    <div key={friend.id} className="home-user-item">
+                      <div className="home-user-info">
                         <div
-                          style={{
-                            ...styles.statusDot,
-                            background: getStatusColor(friendStatuses[friend.id]),
-                          }}
+                          className="home-status-dot"
+                          style={{ background: getStatusColor(friendStatuses[friend.id]) }}
                         />
                         <div>
-                          <div style={styles.userUsername}>{friend.username}</div>
-                          <div style={styles.statusTextSmall}>{getStatusText(friendStatuses[friend.id])}</div>
+                          <div className="home-user-username">{friend.username}</div>
+                          <div className="home-status-text-small">{getStatusText(friendStatuses[friend.id])}</div>
                         </div>
                       </div>
-                      <button onClick={() => handleChatWithFriend(friend)} style={styles.chatButton}>
+                      <button onClick={() => handleChatWithFriend(friend)} className="home-chat-btn">
                         Chat
                       </button>
                     </div>
@@ -255,16 +263,16 @@ export default function Home({ user, userProfile, onEnterChat, onViewFriends, on
           )}
 
           {activeTab === "blocked" && (
-            <div style={styles.tabContent}>
-              <h3 style={styles.sidebarTitle}>Blocked Users</h3>
-              <div style={styles.userList}>
+            <div className="home-tab-content">
+              <h3 className="home-sidebar-title">Blocked Users</h3>
+              <div className="home-user-list">
                 {blockedUsers.length === 0 ? (
-                  <p style={styles.emptyText}>No blocked users</p>
+                  <p className="home-empty-text">No blocked users</p>
                 ) : (
                   blockedUsers.map((blocked) => (
-                    <div key={blocked.uid} style={styles.userItem}>
-                      <span style={styles.userUsername}>{blocked.username}</span>
-                      <button onClick={() => handleUnblockUser(blocked.uid)} style={styles.unblockButton}>
+                    <div key={blocked.uid} className="home-user-item">
+                      <span className="home-user-username">{blocked.username}</span>
+                      <button onClick={() => handleUnblockUser(blocked.uid)} className="home-unblock-btn">
                         Unblock
                       </button>
                     </div>
@@ -277,217 +285,4 @@ export default function Home({ user, userProfile, onEnterChat, onViewFriends, on
       </div>
     </div>
   )
-}
-
-const styles = {
-  container: {
-    minHeight: "100vh",
-    background: "linear-gradient(135deg, #667eea 0%, #764ba2 100%)",
-  },
-  header: {
-    background: "rgba(255, 255, 255, 0.95)",
-    padding: "20px 40px",
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",
-    boxShadow: "0 2px 10px rgba(0,0,0,0.1)",
-  },
-  title: {
-    fontSize: "28px",
-    fontWeight: "bold",
-    color: "#667eea",
-    margin: "0",
-  },
-  username: {
-    color: "#666",
-    margin: "4px 0 0 0",
-  },
-  headerButtons: {
-    display: "flex",
-    gap: "12px",
-  },
-  friendsButton: {
-    padding: "10px 24px",
-    background: "#667eea",
-    color: "white",
-    border: "none",
-    borderRadius: "8px",
-    fontSize: "14px",
-    fontWeight: "600",
-    cursor: "pointer",
-  },
-  logoutButton: {
-    padding: "10px 24px",
-    background: "#e74c3c",
-    color: "white",
-    border: "none",
-    borderRadius: "8px",
-    fontSize: "14px",
-    fontWeight: "600",
-    cursor: "pointer",
-  },
-  content: {
-    display: "flex",
-    gap: "24px",
-    padding: "40px",
-    maxWidth: "1400px",
-    margin: "0 auto",
-  },
-  mainSection: {
-    flex: "1",
-    display: "flex",
-    flexDirection: "column",
-    gap: "24px",
-  },
-  card: {
-    background: "white",
-    borderRadius: "16px",
-    padding: "48px",
-    textAlign: "center",
-    boxShadow: "0 10px 40px rgba(0,0,0,0.1)",
-  },
-  cardTitle: {
-    fontSize: "32px",
-    fontWeight: "bold",
-    color: "#333",
-    marginBottom: "12px",
-  },
-  cardDescription: {
-    color: "#666",
-    fontSize: "16px",
-    marginBottom: "32px",
-  },
-  enterButton: {
-    padding: "16px 48px",
-    background: "#667eea",
-    color: "white",
-    border: "none",
-    borderRadius: "12px",
-    fontSize: "18px",
-    fontWeight: "600",
-    cursor: "pointer",
-    transition: "transform 0.2s",
-  },
-  statsCard: {
-    background: "white",
-    borderRadius: "16px",
-    padding: "32px",
-    boxShadow: "0 10px 40px rgba(0,0,0,0.1)",
-  },
-  statItem: {
-    textAlign: "center",
-  },
-  statNumber: {
-    fontSize: "48px",
-    fontWeight: "bold",
-    color: "#667eea",
-  },
-  statLabel: {
-    color: "#666",
-    fontSize: "16px",
-    marginTop: "8px",
-  },
-  sidebar: {
-    width: "360px",
-    background: "white",
-    borderRadius: "16px",
-    padding: "24px",
-    boxShadow: "0 10px 40px rgba(0,0,0,0.1)",
-    maxHeight: "calc(100vh - 160px)",
-    display: "flex",
-    flexDirection: "column",
-  },
-  tabs: {
-    display: "flex",
-    gap: "8px",
-    marginBottom: "20px",
-  },
-  tab: {
-    flex: "1",
-    padding: "10px",
-    background: "#f0f0f0",
-    border: "none",
-    borderRadius: "6px",
-    fontSize: "13px",
-    fontWeight: "600",
-    cursor: "pointer",
-    color: "#666",
-  },
-  activeTab: {
-    background: "#667eea",
-    color: "white",
-  },
-  tabContent: {
-    flex: "1",
-    display: "flex",
-    flexDirection: "column",
-    overflow: "hidden",
-  },
-  sidebarTitle: {
-    fontSize: "20px",
-    fontWeight: "bold",
-    color: "#333",
-    marginBottom: "20px",
-  },
-  userList: {
-    display: "flex",
-    flexDirection: "column",
-    gap: "12px",
-    overflowY: "auto",
-    flex: "1",
-  },
-  emptyText: {
-    color: "#999",
-    textAlign: "center",
-    padding: "20px",
-  },
-  userItem: {
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",
-    padding: "12px",
-    background: "#f8f9fa",
-    borderRadius: "8px",
-    transition: "background 0.2s",
-  },
-  userInfo: {
-    display: "flex",
-    alignItems: "center",
-    gap: "12px",
-  },
-  statusDot: {
-    width: "10px",
-    height: "10px",
-    borderRadius: "50%",
-    flexShrink: 0,
-  },
-  userUsername: {
-    fontWeight: "600",
-    color: "#333",
-  },
-  statusTextSmall: {
-    fontSize: "11px",
-    color: "#666",
-    marginTop: "2px",
-  },
-  chatButton: {
-    padding: "6px 16px",
-    background: "#667eea",
-    color: "white",
-    border: "none",
-    borderRadius: "6px",
-    fontSize: "13px",
-    fontWeight: "600",
-    cursor: "pointer",
-  },
-  unblockButton: {
-    padding: "6px 16px",
-    background: "#2ecc71",
-    color: "white",
-    border: "none",
-    borderRadius: "6px",
-    fontSize: "13px",
-    fontWeight: "600",
-    cursor: "pointer",
-  },
 }
