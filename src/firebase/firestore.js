@@ -14,6 +14,7 @@ import {
   orderBy,
   arrayUnion,
   arrayRemove,
+  limit,
 } from "firebase/firestore"
 import { ref, set, onValue, onDisconnect, serverTimestamp as rtdbServerTimestamp } from "firebase/database"
 import { db, rtdb } from "./firebaseConfig"
@@ -241,12 +242,12 @@ export const endChatRoom = async (chatRoomId) => {
   })
 }
 
-// Send message
-export const sendMessage = async (chatRoomId, senderId, senderName, message) => {
+export const sendMessage = async (chatRoomId, senderId, senderName, message, mentions = []) => {
   await addDoc(collection(db, "chatRooms", chatRoomId, "messages"), {
     senderId,
     senderName,
     message,
+    mentions, // Array of user IDs mentioned in the message
     timestamp: serverTimestamp(),
   })
 }
@@ -580,5 +581,512 @@ export const listenToAcceptedChatRequests = (uid, callback) => {
         }
       }
     }
+  })
+}
+
+// Simple nickname existence check using users/{nickname}
+export const checkNicknameExists = async (nickname) => {
+  const snap = await getDoc(doc(db, "users", nickname))
+  return snap.exists()
+}
+
+// Register a new user with nickname + password + gender
+// Note: Password is stored in plaintext here to match your spec; ideally hash before storing.
+export const registerUser = async (nickname, password, gender) => {
+  const userRef = doc(db, "users", nickname)
+  const exists = await getDoc(userRef)
+  if (exists.exists()) {
+    throw new Error("Nickname already taken")
+  }
+
+  await setDoc(userRef, {
+    // store nickname as the canonical id; also include uid to keep rest of app unchanged
+    uid: nickname,
+    nickname,
+    username: nickname, // keep 'username' for compatibility with existing UI
+    password, // TODO: hash ideally
+    gender,
+    friends: [],
+    blockedUsers: [],
+    createdAt: serverTimestamp(),
+  })
+
+  // Return minimal session info
+  return { uid: nickname, nickname }
+}
+
+// Login by verifying nickname + password
+export const loginUser = async (nickname, password) => {
+  const userRef = doc(db, "users", nickname)
+  const snap = await getDoc(userRef)
+  if (!snap.exists()) {
+    throw new Error("Invalid nickname or password")
+  }
+  const data = snap.data()
+  if (data.password !== password) {
+    throw new Error("Invalid nickname or password")
+  }
+  return { uid: nickname, nickname }
+}
+
+// Create a new group
+export const createGroup = async (creatorUid, name, description = "", image = "", isPublic = true) => {
+  const groupRef = await addDoc(collection(db, "groups"), {
+    name,
+    description,
+    image,
+    isPublic,
+    createdBy: creatorUid,
+    admins: [creatorUid],
+    members: [creatorUid],
+    joinRequests: [],
+    createdAt: serverTimestamp(),
+    activityScore: 0,
+    lastActivity: serverTimestamp(),
+  })
+
+  return groupRef.id
+}
+
+// Get user's joined groups
+export const getUserGroups = async (uid) => {
+  const q = query(collection(db, "groups"), where("members", "array-contains", uid))
+  const snapshot = await getDocs(q)
+  return snapshot.docs.map((doc) => ({
+    id: doc.id,
+    ...doc.data(),
+  }))
+}
+
+// Get trending groups (public groups ordered by activity score)
+export const getTrendingGroups = async (limitCount = 10) => {
+  const q = query(
+    collection(db, "groups"),
+    where("isPublic", "==", true),
+    orderBy("activityScore", "desc"),
+    limit(limitCount),
+  )
+  const snapshot = await getDocs(q)
+  return snapshot.docs.map((doc) => ({
+    id: doc.id,
+    ...doc.data(),
+  }))
+}
+
+// Listen to trending groups
+export const listenToTrendingGroups = (callback, limitCount = 10) => {
+  const q = query(
+    collection(db, "groups"),
+    where("isPublic", "==", true),
+    orderBy("activityScore", "desc"),
+    limit(limitCount),
+  )
+  return onSnapshot(q, (snapshot) => {
+    const groups = snapshot.docs.map((doc) => ({
+      id: doc.id,
+      ...doc.data(),
+    }))
+    callback(groups)
+  })
+}
+
+// Get group details
+export const getGroup = async (groupId) => {
+  const groupDoc = await getDoc(doc(db, "groups", groupId))
+  return groupDoc.exists() ? { id: groupDoc.id, ...groupDoc.data() } : null
+}
+
+// Listen to group details
+export const listenToGroup = (groupId, callback) => {
+  return onSnapshot(doc(db, "groups", groupId), (doc) => {
+    if (doc.exists()) {
+      callback({ id: doc.id, ...doc.data() })
+    } else {
+      callback(null)
+    }
+  })
+}
+
+// Send group message
+export const sendGroupMessage = async (groupId, senderId, senderName, message, mentions = []) => {
+  // Add message
+  await addDoc(collection(db, "groups", groupId, "messages"), {
+    senderId,
+    senderName,
+    message,
+    mentions,
+    timestamp: serverTimestamp(),
+  })
+
+  // Update activity score
+  await updateGroupActivity(groupId)
+}
+
+// Listen to group messages
+export const listenToGroupMessages = (groupId, callback) => {
+  const q = query(collection(db, "groups", groupId, "messages"), orderBy("timestamp"))
+  return onSnapshot(q, (snapshot) => {
+    const messages = snapshot.docs.map((doc) => ({
+      id: doc.id,
+      ...doc.data(),
+    }))
+    callback(messages)
+  })
+}
+
+// Update group activity score
+export const updateGroupActivity = async (groupId) => {
+  const groupRef = doc(db, "groups", groupId)
+  const groupDoc = await getDoc(groupRef)
+
+  if (groupDoc.exists()) {
+    const memberCount = groupDoc.data().members?.length || 0
+
+    // Get recent messages count (last 24 hours)
+    const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000)
+    const messagesQuery = query(collection(db, "groups", groupId, "messages"), where("timestamp", ">=", oneDayAgo))
+    const messagesSnapshot = await getDocs(messagesQuery)
+    const recentMessagesCount = messagesSnapshot.size
+
+    // Calculate activity score: (recent_messages * 2) + member_count
+    const activityScore = recentMessagesCount * 2 + memberCount
+
+    await updateDoc(groupRef, {
+      activityScore,
+      lastActivity: serverTimestamp(),
+    })
+  }
+}
+
+// Request to join a group
+export const requestJoinGroup = async (groupId, userId, username) => {
+  const groupRef = doc(db, "groups", groupId)
+  await updateDoc(groupRef, {
+    joinRequests: arrayUnion({ uid: userId, username, requestedAt: new Date().toISOString() }),
+  })
+}
+
+// Approve join request
+export const approveJoinRequest = async (groupId, userId, username) => {
+  const groupRef = doc(db, "groups", groupId)
+  const groupDoc = await getDoc(groupRef)
+
+  if (groupDoc.exists()) {
+    const joinRequests = groupDoc.data().joinRequests || []
+    const request = joinRequests.find((r) => r.uid === userId)
+
+    if (request) {
+      await updateDoc(groupRef, {
+        members: arrayUnion(userId),
+        joinRequests: arrayRemove(request),
+      })
+
+      // Update activity score
+      await updateGroupActivity(groupId)
+    }
+  }
+}
+
+// Reject join request
+export const rejectJoinRequest = async (groupId, userId) => {
+  const groupRef = doc(db, "groups", groupId)
+  const groupDoc = await getDoc(groupRef)
+
+  if (groupDoc.exists()) {
+    const joinRequests = groupDoc.data().joinRequests || []
+    const request = joinRequests.find((r) => r.uid === userId)
+
+    if (request) {
+      await updateDoc(groupRef, {
+        joinRequests: arrayRemove(request),
+      })
+    }
+  }
+}
+
+// Leave group
+export const leaveGroup = async (groupId, userId) => {
+  const groupRef = doc(db, "groups", groupId)
+  const groupDoc = await getDoc(groupRef)
+
+  if (groupDoc.exists()) {
+    const admins = groupDoc.data().admins || []
+
+    await updateDoc(groupRef, {
+      members: arrayRemove(userId),
+      admins: arrayRemove(userId), // Remove from admins if they were one
+    })
+
+    // Update activity score
+    await updateGroupActivity(groupId)
+
+    // If creator left and there are still members, assign a new admin
+    if (groupDoc.data().createdBy === userId) {
+      const remainingMembers = groupDoc.data().members.filter((m) => m !== userId)
+      if (remainingMembers.length > 0 && admins.length === 1) {
+        await updateDoc(groupRef, {
+          admins: [remainingMembers[0]],
+        })
+      }
+    }
+  }
+}
+
+// Add member to group (admin only)
+export const addMemberToGroup = async (groupId, userId) => {
+  const groupRef = doc(db, "groups", groupId)
+  await updateDoc(groupRef, {
+    members: arrayUnion(userId),
+  })
+
+  // Update activity score
+  await updateGroupActivity(groupId)
+}
+
+// Remove member from group (admin only)
+export const removeMemberFromGroup = async (groupId, userId) => {
+  const groupRef = doc(db, "groups", groupId)
+  await updateDoc(groupRef, {
+    members: arrayRemove(userId),
+    admins: arrayRemove(userId), // Also remove from admins if they were one
+  })
+
+  // Update activity score
+  await updateGroupActivity(groupId)
+}
+
+// Promote member to admin
+export const promoteToAdmin = async (groupId, userId) => {
+  const groupRef = doc(db, "groups", groupId)
+  await updateDoc(groupRef, {
+    admins: arrayUnion(userId),
+  })
+}
+
+// Demote admin to regular member
+export const demoteFromAdmin = async (groupId, userId) => {
+  const groupRef = doc(db, "groups", groupId)
+  const groupDoc = await getDoc(groupRef)
+
+  // Don't allow demoting the creator
+  if (groupDoc.exists() && groupDoc.data().createdBy !== userId) {
+    await updateDoc(groupRef, {
+      admins: arrayRemove(userId),
+    })
+  }
+}
+
+// Delete group (creator only)
+export const deleteGroup = async (groupId) => {
+  await deleteDoc(doc(db, "groups", groupId))
+}
+
+// Get member profiles for a group
+export const getGroupMembers = async (groupId) => {
+  const groupDoc = await getDoc(doc(db, "groups", groupId))
+  if (!groupDoc.exists()) return []
+
+  const memberIds = groupDoc.data().members || []
+  const members = await Promise.all(
+    memberIds.map(async (memberId) => {
+      const memberDoc = await getDoc(doc(db, "users", memberId))
+      return memberDoc.exists() ? { id: memberId, ...memberDoc.data() } : null
+    }),
+  )
+
+  return members.filter((m) => m !== null)
+}
+
+// Parse mentions from message text
+export const parseMentions = (messageText, availableUsers) => {
+  const mentionRegex = /@(\w+)/g
+  const mentions = []
+  let match
+
+  while ((match = mentionRegex.exec(messageText)) !== null) {
+    const username = match[1]
+    const user = availableUsers.find((u) => u.username === username || u.nickname === username)
+    if (user) {
+      mentions.push(user.uid || user.id)
+    }
+  }
+
+  return [...new Set(mentions)] // Remove duplicates
+}
+
+// Update group settings
+export const updateGroupSettings = async (groupId, updates) => {
+  const groupRef = doc(db, "groups", groupId)
+  await updateDoc(groupRef, {
+    ...updates,
+    updatedAt: serverTimestamp(),
+  })
+}
+
+// Invite user to group
+export const inviteUserToGroup = async (groupId, invitedUserId, invitedUsername, inviterUid, inviterUsername) => {
+  await addDoc(collection(db, "groupInvites"), {
+    groupId,
+    invitedUserId,
+    invitedUsername,
+    inviterUid,
+    inviterUsername,
+    status: "pending",
+    timestamp: serverTimestamp(),
+  })
+}
+
+// Get group invites for user
+export const getGroupInvites = async (userId) => {
+  const q = query(
+    collection(db, "groupInvites"),
+    where("invitedUserId", "==", userId),
+    where("status", "==", "pending"),
+  )
+  const snapshot = await getDocs(q)
+
+  // Fetch group details for each invite
+  const invites = await Promise.all(
+    snapshot.docs.map(async (docSnapshot) => {
+      const invite = docSnapshot.data()
+      const group = await getGroup(invite.groupId)
+      return {
+        id: docSnapshot.id,
+        ...invite,
+        group,
+      }
+    }),
+  )
+
+  return invites
+}
+
+// Listen to group invites
+export const listenToGroupInvites = (userId, callback) => {
+  const q = query(
+    collection(db, "groupInvites"),
+    where("invitedUserId", "==", userId),
+    where("status", "==", "pending"),
+  )
+
+  return onSnapshot(q, async (snapshot) => {
+    const invites = await Promise.all(
+      snapshot.docs.map(async (docSnapshot) => {
+        const invite = docSnapshot.data()
+        const group = await getGroup(invite.groupId)
+        return {
+          id: docSnapshot.id,
+          ...invite,
+          group,
+        }
+      }),
+    )
+    callback(invites)
+  })
+}
+
+// Accept group invite
+export const acceptGroupInvite = async (inviteId, groupId, userId) => {
+  await updateDoc(doc(db, "groupInvites", inviteId), {
+    status: "accepted",
+  })
+
+  await addMemberToGroup(groupId, userId)
+}
+
+// Reject group invite
+export const rejectGroupInvite = async (inviteId) => {
+  await updateDoc(doc(db, "groupInvites", inviteId), {
+    status: "rejected",
+  })
+}
+
+// Add reaction to group message
+export const addMessageReaction = async (groupId, messageId, userId, emoji) => {
+  const messageRef = doc(db, "groups", groupId, "messages", messageId)
+  const messageDoc = await getDoc(messageRef)
+
+  if (messageDoc.exists()) {
+    const reactions = messageDoc.data().reactions || {}
+
+    // Initialize emoji array if it doesn't exist
+    if (!reactions[emoji]) {
+      reactions[emoji] = []
+    }
+
+    // Toggle reaction: remove if already exists, add if not
+    if (reactions[emoji].includes(userId)) {
+      reactions[emoji] = reactions[emoji].filter((id) => id !== userId)
+      // Remove emoji key if no users left
+      if (reactions[emoji].length === 0) {
+        delete reactions[emoji]
+      }
+    } else {
+      reactions[emoji].push(userId)
+    }
+
+    await updateDoc(messageRef, { reactions })
+  }
+}
+
+// Search users for group invite
+export const searchUsers = async (searchTerm, excludeUserIds = []) => {
+  if (!searchTerm.trim()) return []
+
+  const usersQuery = query(collection(db, "users"))
+  const snapshot = await getDocs(usersQuery)
+
+  const users = snapshot.docs
+    .map((doc) => ({ id: doc.id, ...doc.data() }))
+    .filter((user) => {
+      const matchesSearch =
+        user.username?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        user.nickname?.toLowerCase().includes(searchTerm.toLowerCase())
+      const notExcluded = !excludeUserIds.includes(user.uid || user.id)
+      return matchesSearch && notExcluded
+    })
+    .slice(0, 10) // Limit to 10 results
+
+  return users
+}
+
+// Pin/unpin message
+export const togglePinMessage = async (groupId, messageId) => {
+  const groupRef = doc(db, "groups", groupId)
+  const groupDoc = await getDoc(groupRef)
+
+  if (groupDoc.exists()) {
+    const pinnedMessages = groupDoc.data().pinnedMessages || []
+
+    if (pinnedMessages.includes(messageId)) {
+      // Unpin
+      await updateDoc(groupRef, {
+        pinnedMessages: arrayRemove(messageId),
+      })
+    } else {
+      // Pin (limit to 5 pinned messages)
+      if (pinnedMessages.length >= 5) {
+        alert("Maximum 5 pinned messages allowed")
+        return
+      }
+      await updateDoc(groupRef, {
+        pinnedMessages: arrayUnion(messageId),
+      })
+    }
+  }
+}
+
+// Delete message (admin or message sender)
+export const deleteGroupMessage = async (groupId, messageId) => {
+  await deleteDoc(doc(db, "groups", groupId, "messages", messageId))
+}
+
+// Edit message
+export const editGroupMessage = async (groupId, messageId, newMessage) => {
+  const messageRef = doc(db, "groups", groupId, "messages", messageId)
+  await updateDoc(messageRef, {
+    message: newMessage,
+    edited: true,
+    editedAt: serverTimestamp(),
   })
 }

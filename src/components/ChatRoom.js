@@ -10,7 +10,8 @@ import {
   blockUser,
   listenToChatRoom,
   setUserPresence,
-  reportUser, // Added reportUser import
+  reportUser,
+  parseMentions,
 } from "../firebase/firestore"
 
 export default function ChatRoom({ user, userProfile, chatRoomId, onChatEnded, onEndChatPermanently }) {
@@ -83,7 +84,14 @@ export default function ChatRoom({ user, userProfile, chatRoomId, onChatEnded, o
     e.preventDefault()
     if (!newMessage.trim() || partnerLeft) return
 
-    await sendMessage(chatRoomId, user.uid, userProfile.username, newMessage)
+    // Parse mentions from message (for one-on-one chat, only partner can be mentioned)
+    const availableUsers = [
+      { uid: user.uid, username: userProfile.username },
+      { uid: partnerId, username: partnerName },
+    ]
+    const mentions = parseMentions(newMessage, availableUsers)
+
+    await sendMessage(chatRoomId, user.uid, userProfile.username, newMessage, mentions)
     setNewMessage("")
   }
 
@@ -149,6 +157,14 @@ export default function ChatRoom({ user, userProfile, chatRoomId, onChatEnded, o
       console.error("Error reporting user:", error)
       alert("Failed to report user. Please try again.")
     }
+  }
+
+  const isMessageMentioningMe = (message) => {
+    return message.mentions?.includes(user.uid)
+  }
+
+  const highlightMentions = (text) => {
+    return text.replace(/@(\w+)/g, '<span class="mention-highlight">@$1</span>')
   }
 
   return (
@@ -233,10 +249,13 @@ export default function ChatRoom({ user, userProfile, chatRoomId, onChatEnded, o
                 className={`chat-message-wrapper ${msg.senderId === user.uid ? "chat-message-right" : "chat-message-left"}`}
               >
                 <div
-                  className={`chat-message ${msg.senderId === user.uid ? "chat-message-sent" : "chat-message-received"}`}
+                  className={`chat-message ${msg.senderId === user.uid ? "chat-message-sent" : "chat-message-received"} ${isMessageMentioningMe(msg) ? "chat-message-mentioned" : ""}`}
                 >
                   <div className="chat-message-sender">{msg.senderName}</div>
-                  <div className="chat-message-text">{msg.message}</div>
+                  <div
+                    className="chat-message-text"
+                    dangerouslySetInnerHTML={{ __html: highlightMentions(msg.message) }}
+                  />
                 </div>
               </div>
             ))

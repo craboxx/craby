@@ -11,6 +11,7 @@ import ChatRequestModal from "./ChatRequestModal"
 import GroupList from "./GroupList"
 import GroupChat from "./GroupChat"
 import GroupModal from "./GroupModal"
+import GroupInviteNotification from "./GroupInviteNotification"
 
 function App() {
   const [user, setUser] = useState(null) // { uid: nickname, nickname }
@@ -180,6 +181,8 @@ function App() {
     <div style={styles.app}>
       <ChatRequestModal user={user} userProfile={userProfile} onChatAccepted={handleChatRequestAccepted} />
 
+      <GroupInviteNotification user={user} onGroupJoined={(group) => handleSelectGroup(group)} />
+
       {showGroupModal && (
         <GroupModal
           user={user}
@@ -223,6 +226,7 @@ function App() {
           onSelectGroup={handleSelectGroup}
           onCreateGroup={handleCreateGroup}
           onJoinGroup={handleJoinGroup}
+          onBack={handleBackToHome}
         />
       )}
 

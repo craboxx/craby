@@ -1,22 +1,17 @@
 "use client"
 
 import { useState } from "react"
-import { createUserWithEmailAndPassword, signInWithEmailAndPassword } from "firebase/auth"
-import { auth } from "../firebase/firebaseConfig"
-import { checkUsernameAvailable, createUserProfile } from "../firebase/firestore"
+import { registerUser, loginUser, checkNicknameExists } from "../firebase/firestore"
 
 export default function Auth({ onAuthSuccess }) {
   const [isLogin, setIsLogin] = useState(true)
-  const [email, setEmail] = useState("")
+  const [nickname, setNickname] = useState("")
   const [password, setPassword] = useState("")
-  const [username, setUsername] = useState("")
+  const [gender, setGender] = useState("male")
   const [error, setError] = useState("")
   const [loading, setLoading] = useState(false)
 
-  const validateUsername = (username) => {
-    const regex = /^[a-zA-Z0-9_]+$/
-    return regex.test(username)
-  }
+  const validateNickname = (name) => /^[a-zA-Z0-9_]+$/.test(name)
 
   const handleSubmit = async (e) => {
     e.preventDefault()
@@ -25,41 +20,43 @@ export default function Auth({ onAuthSuccess }) {
 
     try {
       if (isLogin) {
-        // Login
-        await signInWithEmailAndPassword(auth, email, password)
-        onAuthSuccess()
+        if (!nickname.trim() || !password.trim()) {
+          setError("Nickname and password are required")
+          setLoading(false)
+          return
+        }
+        await loginUser(nickname.trim(), password)
+        // Pass nickname up so App sets session and presence
+        onAuthSuccess(nickname.trim())
       } else {
-        // Signup
-        if (!username.trim()) {
-          setError("Username is required")
+        if (!nickname.trim()) {
+          setError("Nickname is required")
+          setLoading(false)
+          return
+        }
+        if (!validateNickname(nickname.trim())) {
+          setError("Nickname can only contain letters, numbers, and underscores")
+          setLoading(false)
+          return
+        }
+        if (!password.trim()) {
+          setError("Password is required")
           setLoading(false)
           return
         }
 
-        if (!validateUsername(username)) {
-          setError("Username can only contain letters, numbers, and underscores")
+        const exists = await checkNicknameExists(nickname.trim())
+        if (exists) {
+          setError("Nickname already taken")
           setLoading(false)
           return
         }
 
-        // Check if username is available
-        const isAvailable = await checkUsernameAvailable(username)
-        if (!isAvailable) {
-          setError("Username is already taken")
-          setLoading(false)
-          return
-        }
-
-        // Create user
-        const userCredential = await createUserWithEmailAndPassword(auth, email, password)
-
-        // Create user profile
-        await createUserProfile(userCredential.user.uid, email, username)
-
-        onAuthSuccess()
+        await registerUser(nickname.trim(), password, gender)
+        onAuthSuccess(nickname.trim())
       }
     } catch (err) {
-      setError(err.message)
+      setError(err.message || "Something went wrong")
     } finally {
       setLoading(false)
     }
@@ -73,10 +70,10 @@ export default function Auth({ onAuthSuccess }) {
 
         <form onSubmit={handleSubmit} style={styles.form}>
           <input
-            type="email"
-            placeholder="Email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
+            type="text"
+            placeholder="Nickname (letters, numbers, _ only)"
+            value={nickname}
+            onChange={(e) => setNickname(e.target.value)}
             required
             style={styles.input}
           />
@@ -91,20 +88,35 @@ export default function Auth({ onAuthSuccess }) {
           />
 
           {!isLogin && (
-            <input
-              type="text"
-              placeholder="Username (letters, numbers, _ only)"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              required
-              style={styles.input}
-            />
+            <div style={styles.genderRow}>
+              <label style={styles.genderLabel}>Gender:</label>
+              <label style={styles.radioLabel}>
+                <input
+                  type="radio"
+                  name="gender"
+                  value="male"
+                  checked={gender === "male"}
+                  onChange={() => setGender("male")}
+                />
+                <span style={styles.radioText}>Male</span>
+              </label>
+              <label style={styles.radioLabel}>
+                <input
+                  type="radio"
+                  name="gender"
+                  value="female"
+                  checked={gender === "female"}
+                  onChange={() => setGender("female")}
+                />
+                <span style={styles.radioText}>Female</span>
+              </label>
+            </div>
           )}
 
           {error && <p style={styles.error}>{error}</p>}
 
           <button type="submit" disabled={loading} style={styles.button}>
-            {loading ? "Loading..." : isLogin ? "Login" : "Sign Up"}
+            {loading ? "Loading..." : isLogin ? "Login" : "Register"}
           </button>
         </form>
 
@@ -117,7 +129,7 @@ export default function Auth({ onAuthSuccess }) {
             }}
             style={styles.link}
           >
-            {isLogin ? "Sign Up" : "Login"}
+            {isLogin ? "Register" : "Login"}
           </span>
         </p>
       </div>
@@ -167,6 +179,16 @@ const styles = {
     outline: "none",
     transition: "border-color 0.3s",
   },
+  genderRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: "16px",
+    fontSize: "14px",
+    color: "#333",
+  },
+  genderLabel: { fontWeight: 600 },
+  radioLabel: { display: "flex", alignItems: "center", gap: "6px" },
+  radioText: { fontSize: "14px" },
   button: {
     padding: "12px",
     background: "#667eea",

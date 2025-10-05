@@ -13,7 +13,15 @@ import {
   isUserBlocked,
 } from "../firebase/firestore"
 
-export default function Home({ user, userProfile, onEnterChat, onViewFriends, onLogout, onStartDirectChat }) {
+export default function Home({
+  user,
+  userProfile,
+  onEnterChat,
+  onViewFriends,
+  onLogout,
+  onStartDirectChat,
+  onViewGroups,
+}) {
   const [onlineUsers, setOnlineUsers] = useState([])
   const [onlineUserProfiles, setOnlineUserProfiles] = useState([])
   const [chatRequests, setChatRequests] = useState([])
@@ -146,6 +154,9 @@ export default function Home({ user, userProfile, onEnterChat, onViewFriends, on
           <button onClick={onViewFriends} className="home-mobile-menu-item">
             Friends
           </button>
+          <button onClick={onViewGroups} className="home-mobile-menu-item">
+            Groups
+          </button>
           <button onClick={onLogout} className="home-mobile-menu-item">
             Logout
           </button>
@@ -160,6 +171,9 @@ export default function Home({ user, userProfile, onEnterChat, onViewFriends, on
         <div className="home-header-buttons">
           <button onClick={onViewFriends} className="home-friends-btn">
             Friends
+          </button>
+          <button onClick={onViewGroups} className="home-groups-btn">
+            Groups
           </button>
           <button onClick={onLogout} className="home-logout-btn">
             Logout
