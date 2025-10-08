@@ -17,6 +17,7 @@ import {
   togglePinMessage,
   deleteGroupMessage,
   editGroupMessage,
+  getUserProfile,
 } from "../firebase/firestore"
 import GroupSettingsModal from "./GroupSettingsModal"
 import InviteMemberModal from "./InviteMemberModal"
@@ -41,6 +42,7 @@ export default function GroupChat({ user, groupId, onBack }) {
   const [mentionStartIndex, setMentionStartIndex] = useState(-1)
   const [filteredMembers, setFilteredMembers] = useState([])
   const [selectedMentionIndex, setSelectedMentionIndex] = useState(0)
+  const [reactionUsers, setReactionUsers] = useState({ open: false, emoji: "", users: [], loading: false, msgId: "" })
 
   const messagesEndRef = useRef(null)
   const inputRef = useRef(null)
@@ -108,15 +110,21 @@ export default function GroupChat({ user, groupId, onBack }) {
     e.preventDefault()
     if (!newMessage.trim()) return
 
-    let messageToSend = newMessage
+    const mentions = parseMentions(newMessage, members)
 
+    const extra = {}
     if (replyingTo) {
-      messageToSend = `[Reply to @${replyingTo.senderName}] ${newMessage}`
+      const raw = replyingTo.message || ""
+      const snippet = raw.length > 140 ? raw.slice(0, 140) + "…" : raw
+      extra.replyTo = {
+        messageId: replyingTo.id,
+        senderId: replyingTo.senderId,
+        senderName: replyingTo.senderName,
+        snippet,
+      }
     }
 
-    const mentions = parseMentions(messageToSend, members)
-
-    await sendGroupMessage(groupId, user.uid, user.nickname, messageToSend, mentions)
+    await sendGroupMessage(groupId, user.uid, user.nickname || user.username, newMessage, mentions, extra)
     setNewMessage("")
     setReplyingTo(null)
   }
@@ -270,20 +278,49 @@ export default function GroupChat({ user, groupId, onBack }) {
     return text.replace(/@(\w+)/g, '<span class="mention-highlight">@$1</span>')
   }
 
-  const extractReplyInfo = (messageText) => {
-    const replyMatch = messageText.match(/^\[Reply to @(.+?)\] (.+)$/)
+  const extractReplyInfo = (messageObj) => {
+    const text = messageObj.message || ""
+    if (messageObj.replyTo) {
+      return {
+        type: "structured",
+        replyTo: messageObj.replyTo,
+        actualMessage: text,
+      }
+    }
+    const replyMatch = text.match(/^\[Reply to @(.+?)\] (.+)$/)
     if (replyMatch) {
       return {
-        isReply: true,
-        replyToUser: replyMatch[1],
+        type: "legacy",
+        replyTo: { senderName: replyMatch[1], snippet: "" },
         actualMessage: replyMatch[2],
       }
     }
-    return { isReply: false, actualMessage: messageText }
+    return { type: "none", actualMessage: text }
   }
 
   const isMessagePinned = (messageId) => {
     return group?.pinnedMessages?.includes(messageId)
+  }
+
+  const openReactionUsers = async (messageId, emoji, userIds = []) => {
+    setReactionUsers({ open: true, emoji, users: [], loading: true, msgId: messageId })
+    try {
+      const profiles = await Promise.all(
+        userIds.map(async (uid) => {
+          const profile = await getUserProfile(uid)
+          return profile ? { uid, username: profile.username || profile.nickname || uid } : { uid, username: uid }
+        }),
+      )
+      setReactionUsers({ open: true, emoji, users: profiles, loading: false, msgId: messageId })
+    } catch (e) {
+      console.error(e)
+      setReactionUsers({ open: true, emoji, users: [], loading: false, msgId: messageId })
+    }
+  }
+
+  const toggleMyReactionFromModal = async () => {
+    if (!reactionUsers.open) return
+    await addMessageReaction(groupId, reactionUsers.msgId, user.uid, reactionUsers.emoji)
   }
 
   if (!group) {
@@ -420,27 +457,30 @@ export default function GroupChat({ user, groupId, onBack }) {
             </div>
           ) : (
             messages.map((msg) => {
-              const { isReply, replyToUser, actualMessage } = extractReplyInfo(msg.message)
-
+              const replyInfo = extractReplyInfo(msg)
+              const isMine = msg.senderId === user.uid
               return (
                 <div
                   key={msg.id}
-                  className={`group-chat-message-wrapper ${msg.senderId === user.uid ? "group-chat-message-right" : "group-chat-message-left"}`}
+                  className={`group-chat-message-wrapper ${isMine ? "group-chat-message-right" : "group-chat-message-left"}`}
                 >
                   <div
-                    className={`group-chat-message ${msg.senderId === user.uid ? "group-chat-message-sent" : "group-chat-message-received"} ${isMessageMentioningMe(msg) ? "group-chat-message-mentioned" : ""} ${isMessagePinned(msg.id) ? "group-chat-message-pinned" : ""}`}
+                    className={`group-chat-message ${isMine ? "group-chat-message-sent" : "group-chat-message-received"} ${isMessageMentioningMe(msg) ? "group-chat-message-mentioned" : ""} ${isMessagePinned(msg.id) ? "group-chat-message-pinned" : ""}`}
                   >
                     {isMessagePinned(msg.id) && <div className="group-message-pin-indicator">📌 Pinned Message</div>}
 
-                    {msg.senderId !== user.uid && (
-                      <div className="group-chat-message-sender-highlight">{msg.senderName}</div>
-                    )}
+                    {!isMine && <div className="group-chat-message-sender-highlight">{msg.senderName}</div>}
 
-                    {isReply && (
+                    {(replyInfo.type === "structured" || replyInfo.type === "legacy") && (
                       <div className="group-message-reply-reference">
                         <div className="group-message-reply-line" />
                         <div className="group-message-reply-content">
-                          <span className="group-message-reply-user">@{replyToUser}</span>
+                          <span className="group-message-reply-user">
+                            @{replyInfo.replyTo.senderName || replyInfo.replyTo.sender || replyInfo.replyTo.replyToUser}
+                          </span>
+                          {replyInfo.type === "structured" && replyInfo.replyTo.snippet && (
+                            <span className="group-message-reply-snippet">{replyInfo.replyTo.snippet}</span>
+                          )}
                         </div>
                       </div>
                     )}
@@ -473,7 +513,7 @@ export default function GroupChat({ user, groupId, onBack }) {
                       <>
                         <div
                           className="group-chat-message-text"
-                          dangerouslySetInnerHTML={{ __html: highlightMentions(isReply ? actualMessage : msg.message) }}
+                          dangerouslySetInnerHTML={{ __html: highlightMentions(replyInfo.actualMessage) }}
                         />
                         {msg.edited && <span className="group-message-edited">(edited)</span>}
                       </>
@@ -484,9 +524,9 @@ export default function GroupChat({ user, groupId, onBack }) {
                         {Object.entries(msg.reactions).map(([emoji, userIds]) => (
                           <button
                             key={emoji}
-                            onClick={() => handleReaction(msg.id, emoji)}
+                            onClick={() => openReactionUsers(msg.id, emoji, userIds)}
                             className={`group-message-reaction ${userIds.includes(user.uid) ? "group-message-reaction-active" : ""}`}
-                            title={`${userIds.length} reaction${userIds.length > 1 ? "s" : ""}`}
+                            title={`View ${emoji} reactions`}
                           >
                             {emoji} {userIds.length}
                           </button>
@@ -523,7 +563,7 @@ export default function GroupChat({ user, groupId, onBack }) {
                           <button
                             onClick={() => {
                               setEditingMessageId(msg.id)
-                              setEditingMessageText(isReply ? actualMessage : msg.message)
+                              setEditingMessageText(replyInfo.actualMessage)
                             }}
                             className="group-message-action-btn"
                             title="Edit message"
@@ -621,6 +661,54 @@ export default function GroupChat({ user, groupId, onBack }) {
           </button>
         </form>
       </div>
+
+      {reactionUsers.open && (
+        <div
+          className="reaction-users-modal-overlay"
+          onClick={() => setReactionUsers({ open: false, emoji: "", users: [], loading: false, msgId: "" })}
+        >
+          <div className="reaction-users-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="reaction-users-header">
+              <div className="reaction-users-title">
+                Reactions {reactionUsers.emoji && <span className="reaction-users-emoji">{reactionUsers.emoji}</span>}
+              </div>
+              <button
+                className="reaction-users-close"
+                onClick={() => setReactionUsers({ open: false, emoji: "", users: [], loading: false, msgId: "" })}
+              >
+                ✕
+              </button>
+            </div>
+            <div className="reaction-users-content">
+              {reactionUsers.loading ? (
+                <div className="reaction-users-loading">Loading...</div>
+              ) : reactionUsers.users.length === 0 ? (
+                <div className="reaction-users-empty">No users yet.</div>
+              ) : (
+                <div className="reaction-users-list">
+                  {reactionUsers.users.map((u) => (
+                    <div key={u.uid} className="reaction-user-chip">
+                      <div className="reaction-user-avatar">{(u.username || "?").charAt(0).toUpperCase()}</div>
+                      <div className="reaction-user-name">{u.username}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="reaction-users-footer">
+              <button className="reaction-users-toggle-btn" onClick={toggleMyReactionFromModal}>
+                Toggle my {reactionUsers.emoji} reaction
+              </button>
+              <button
+                className="reaction-users-close-secondary"
+                onClick={() => setReactionUsers({ open: false, emoji: "", users: [], loading: false, msgId: "" })}
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

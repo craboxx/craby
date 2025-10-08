@@ -228,20 +228,25 @@ export default function Home({
                 {onlineUserProfiles.length === 0 ? (
                   <p className="home-empty-text">No other users online</p>
                 ) : (
-                  onlineUserProfiles.map((profile) => (
-                    <div key={profile.uid} className="home-user-item">
-                      <div className="home-user-info">
-                        <div className="home-status-dot" style={{ background: getStatusColor(profile.status) }} />
-                        <span className="home-user-username">{profile.username}</span>
+                  onlineUserProfiles.map((profile) => {
+                    const isBlocked = blockedUsers.some((b) => b.uid === profile.uid)
+                    return (
+                      <div key={profile.uid} className="home-user-item">
+                        <div className="home-user-info">
+                          <div className="home-status-dot" style={{ background: getStatusColor(profile.status) }} />
+                          <span className="home-user-username">{profile.username}</span>
+                        </div>
+                        <button
+                          onClick={() => (!isBlocked ? handleSendChatRequest(profile.uid, profile.username) : null)}
+                          className={`home-chat-btn ${isBlocked ? "home-chat-btn-disabled" : ""}`}
+                          disabled={isBlocked}
+                          title={isBlocked ? "You have blocked this user" : "Chat"}
+                        >
+                          Chat
+                        </button>
                       </div>
-                      <button
-                        onClick={() => handleSendChatRequest(profile.uid, profile.username)}
-                        className="home-chat-btn"
-                      >
-                        Chat
-                      </button>
-                    </div>
-                  ))
+                    )
+                  })
                 )}
               </div>
             </div>

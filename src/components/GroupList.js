@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useEffect } from "react"
-import { getUserGroups, listenToTrendingGroups } from "../firebase/firestore"
+import { getUserGroups, listenToTrendingGroups, requestJoinGroup } from "../firebase/firestore"
 
 export default function GroupList({ user, onSelectGroup, onCreateGroup, onJoinGroup, onBack }) {
   const [myGroups, setMyGroups] = useState([])
@@ -34,6 +34,20 @@ export default function GroupList({ user, onSelectGroup, onCreateGroup, onJoinGr
   const handleBackClick = () => {
     if (onBack && typeof onBack === "function") {
       onBack()
+    }
+  }
+
+  const handleJoin = async (group) => {
+    if (typeof onJoinGroup === "function") {
+      onJoinGroup(group)
+      return
+    }
+    try {
+      await requestJoinGroup(group.id, user.uid, user.username || user.nickname)
+      alert(group.isPublic ? "Joined successfully (if auto-join enabled)" : "Join request sent!")
+    } catch (e) {
+      console.error(e)
+      alert("Failed to send join request")
     }
   }
 
@@ -119,8 +133,8 @@ export default function GroupList({ user, onSelectGroup, onCreateGroup, onJoinGr
                       Pending
                     </button>
                   ) : (
-                    <button onClick={() => onJoinGroup(group)} className="group-join-btn">
-                      Join
+                    <button onClick={() => handleJoin(group)} className="group-join-btn">
+                      {group.isPublic ? "Join" : "Request"}
                     </button>
                   )}
                 </div>

@@ -18,6 +18,7 @@ import {
 } from "firebase/firestore"
 import { ref, set, onValue, onDisconnect, serverTimestamp as rtdbServerTimestamp } from "firebase/database"
 import { db, rtdb } from "./firebaseConfig"
+import bcrypt from "bcryptjs" // add bcryptjs import for password hashing
 
 // Check if username is available
 export const checkUsernameAvailable = async (username) => {
@@ -599,12 +600,14 @@ export const registerUser = async (nickname, password, gender) => {
     throw new Error("Nickname already taken")
   }
 
+  const hashedPassword = bcrypt.hashSync(password, 10)
+
   await setDoc(userRef, {
     // store nickname as the canonical id; also include uid to keep rest of app unchanged
     uid: nickname,
     nickname,
     username: nickname, // keep 'username' for compatibility with existing UI
-    password, // TODO: hash ideally
+    password: hashedPassword, // store hashed password under same field
     gender,
     friends: [],
     blockedUsers: [],
@@ -623,9 +626,12 @@ export const loginUser = async (nickname, password) => {
     throw new Error("Invalid nickname or password")
   }
   const data = snap.data()
-  if (data.password !== password) {
+
+  const match = bcrypt.compareSync(password, data.password)
+  if (!match) {
     throw new Error("Invalid nickname or password")
   }
+
   return { uid: nickname, nickname }
 }
 
@@ -660,12 +666,7 @@ export const getUserGroups = async (uid) => {
 
 // Get trending groups (public groups ordered by activity score)
 export const getTrendingGroups = async (limitCount = 10) => {
-  const q = query(
-    collection(db, "groups"),
-    where("isPublic", "==", true),
-    orderBy("activityScore", "desc"),
-    limit(limitCount),
-  )
+  const q = query(collection(db, "groups"), orderBy("activityScore", "desc"), limit(limitCount))
   const snapshot = await getDocs(q)
   return snapshot.docs.map((doc) => ({
     id: doc.id,
@@ -675,12 +676,7 @@ export const getTrendingGroups = async (limitCount = 10) => {
 
 // Listen to trending groups
 export const listenToTrendingGroups = (callback, limitCount = 10) => {
-  const q = query(
-    collection(db, "groups"),
-    where("isPublic", "==", true),
-    orderBy("activityScore", "desc"),
-    limit(limitCount),
-  )
+  const q = query(collection(db, "groups"), orderBy("activityScore", "desc"), limit(limitCount))
   return onSnapshot(q, (snapshot) => {
     const groups = snapshot.docs.map((doc) => ({
       id: doc.id,
@@ -708,17 +704,15 @@ export const listenToGroup = (groupId, callback) => {
 }
 
 // Send group message
-export const sendGroupMessage = async (groupId, senderId, senderName, message, mentions = []) => {
-  // Add message
+export const sendGroupMessage = async (groupId, senderId, senderName, message, mentions = [], extra = {}) => {
   await addDoc(collection(db, "groups", groupId, "messages"), {
     senderId,
     senderName,
     message,
     mentions,
     timestamp: serverTimestamp(),
+    ...extra,
   })
-
-  // Update activity score
   await updateGroupActivity(groupId)
 }
 
