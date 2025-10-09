@@ -15,6 +15,7 @@ import {
   arrayUnion,
   arrayRemove,
   limit,
+  runTransaction, // import runTransaction for atomic move updates
 } from "firebase/firestore"
 import { ref, set, onValue, onDisconnect, serverTimestamp as rtdbServerTimestamp } from "firebase/database"
 import { db, rtdb } from "./firebaseConfig"
@@ -1082,5 +1083,181 @@ export const editGroupMessage = async (groupId, messageId, newMessage) => {
     message: newMessage,
     edited: true,
     editedAt: serverTimestamp(),
+  })
+}
+
+export const listenToTicTacToeGame = (chatRoomId, callback) => {
+  const gameRef = doc(db, "chatRooms", chatRoomId, "games", "ticTacToe")
+  return onSnapshot(gameRef, (snap) => {
+    if (snap.exists()) {
+      callback({ id: snap.id, ...snap.data() })
+    } else {
+      callback(null)
+    }
+  })
+}
+
+export const sendTicTacToeRequest = async (chatRoomId, requesterId, responderId) => {
+  const gameRef = doc(db, "chatRooms", chatRoomId, "games", "ticTacToe")
+  await setDoc(
+    gameRef,
+    {
+      status: "request", // request -> active -> won/draw OR declined/canceled
+      requesterId,
+      responderId,
+      createdAt: serverTimestamp(),
+      // reset transient fields but DO NOT touch scores
+      board: Array(9).fill(null),
+      symbols: null,
+      currentTurn: null,
+      winnerUid: null,
+      endedAt: null,
+    },
+    { merge: true },
+  )
+}
+
+export const acceptTicTacToeRequest = async (chatRoomId, responderId) => {
+  const gameRef = doc(db, "chatRooms", chatRoomId, "games", "ticTacToe")
+  const snap = await getDoc(gameRef)
+  if (!snap.exists()) return
+  const data = snap.data()
+  if (data.status !== "request" || data.responderId !== responderId) return
+
+  const requesterId = data.requesterId
+  const symbols = {
+    [requesterId]: "X",
+    [responderId]: "O",
+  }
+
+  await updateDoc(gameRef, {
+    status: "active",
+    board: Array(9).fill(null),
+    symbols,
+    currentTurn: requesterId, // requester starts
+    startedAt: serverTimestamp(),
+  })
+}
+
+export const declineTicTacToeRequest = async (chatRoomId, responderId) => {
+  const gameRef = doc(db, "chatRooms", chatRoomId, "games", "ticTacToe")
+  const snap = await getDoc(gameRef)
+  if (!snap.exists()) return
+  const data = snap.data()
+  if (data.status !== "request" || data.responderId !== responderId) return
+  await updateDoc(gameRef, { status: "declined", endedAt: serverTimestamp() })
+}
+
+export const cancelTicTacToeGame = async (chatRoomId, requesterId) => {
+  const gameRef = doc(db, "chatRooms", chatRoomId, "games", "ticTacToe")
+  const snap = await getDoc(gameRef)
+  if (!snap.exists()) return
+  const data = snap.data()
+  if (data.status === "request" && data.requesterId === requesterId) {
+    await updateDoc(gameRef, { status: "canceled", endedAt: serverTimestamp() })
+  }
+}
+
+export const makeTicTacToeMove = async (chatRoomId, playerId, index) => {
+  const gameRef = doc(db, "chatRooms", chatRoomId, "games", "ticTacToe")
+
+  const checkWinner = (board) => {
+    const wins = [
+      [0, 1, 2],
+      [3, 4, 5],
+      [6, 7, 8],
+      [0, 3, 6],
+      [1, 4, 7],
+      [2, 5, 8],
+      [0, 4, 8],
+      [2, 4, 6],
+    ]
+    for (const [a, b, c] of wins) {
+      if (board[a] && board[a] === board[b] && board[a] === board[c]) {
+        return true
+      }
+    }
+    return false
+  }
+
+  await runTransaction(db, async (tx) => {
+    const snap = await tx.get(gameRef)
+    if (!snap.exists()) return
+    const data = snap.data()
+
+    if (data.status !== "active") return
+    if (data.currentTurn !== playerId) return
+    if (!Array.isArray(data.board) || index < 0 || index > 8) return
+    if (data.board[index] !== null) return
+
+    const playerSymbol = data.symbols?.[playerId]
+    if (!playerSymbol) return
+
+    const newBoard = [...data.board]
+    newBoard[index] = playerSymbol
+
+    const hasWinner = checkWinner(newBoard)
+    const isDraw = !hasWinner && newBoard.every((c) => c !== null)
+    const otherPlayerId = Object.keys(data.symbols || {}).find((id) => id !== playerId) || null
+
+    if (hasWinner) {
+      const nextScores = { ...(data.scores || {}) }
+      nextScores[playerId] = (nextScores[playerId] || 0) + 1
+
+      tx.update(gameRef, {
+        board: newBoard,
+        status: "won",
+        winnerUid: playerId,
+        lastMoveAt: serverTimestamp(),
+        endedAt: serverTimestamp(),
+        scores: nextScores,
+        celebrationAt: serverTimestamp(),
+      })
+    } else if (isDraw) {
+      tx.update(gameRef, {
+        board: newBoard,
+        status: "draw",
+        lastMoveAt: serverTimestamp(),
+        endedAt: serverTimestamp(),
+        celebrationAt: serverTimestamp(),
+      })
+    } else {
+      tx.update(gameRef, {
+        board: newBoard,
+        currentTurn: otherPlayerId,
+        lastMoveAt: serverTimestamp(),
+      })
+    }
+  })
+}
+
+export const startTicTacToeRematch = async (chatRoomId, starterUid) => {
+  const gameRef = doc(db, "chatRooms", chatRoomId, "games", "ticTacToe")
+  const snap = await getDoc(gameRef)
+  if (!snap.exists()) return
+  const data = snap.data()
+  if (!data.symbols || !data.symbols[starterUid]) return // must be one of players
+
+  await updateDoc(gameRef, {
+    status: "active",
+    board: Array(9).fill(null),
+    currentTurn: starterUid,
+    winnerUid: null,
+    startedAt: serverTimestamp(),
+    endedAt: null,
+    celebrationAt: null,
+  })
+}
+
+export const closeTicTacToeGame = async (chatRoomId) => {
+  const gameRef = doc(db, "chatRooms", chatRoomId, "games", "ticTacToe")
+  await updateDoc(gameRef, {
+    status: "idle",
+    board: Array(9).fill(null),
+    currentTurn: null,
+    winnerUid: null,
+    symbols: null,
+    endedAt: serverTimestamp(),
+    celebrationAt: null,
   })
 }
