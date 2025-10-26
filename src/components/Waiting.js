@@ -4,12 +4,11 @@ import { useState, useEffect } from "react"
 import {
   addToWaitingPool,
   removeFromWaitingPool,
-  createChatRoomAtomic,
   getActiveChatRoom,
   setUserPresence,
-  getExistingChatRoom,
   listenToWaitingPool,
-  isUserInActiveChat, // Import new function
+  isUserInActiveChat,
+  atomicMatchAndCreateRoom,
 } from "../firebase/firestore"
 
 export default function Waiting({ user, userProfile, onChatStarted, onCancel }) {
@@ -22,6 +21,8 @@ export default function Waiting({ user, userProfile, onChatStarted, onCancel }) 
     let isActive = true
     let hasMatched = false
     let matchingAttempted = false
+    let matchTimeout = null
+    let debounceTimer = null
 
     const initializeWaiting = async () => {
       try {
@@ -64,107 +65,87 @@ export default function Waiting({ user, userProfile, onChatStarted, onCancel }) 
           console.log("[v0] Waiting pool updated:", waitingUsers.length, "users")
           setWaitingCount(waitingUsers.length)
 
-          // Check if current user is still in waiting pool
-          const currentUser = waitingUsers.find((u) => u.uid === user.uid)
+          if (debounceTimer) clearTimeout(debounceTimer)
+          debounceTimer = setTimeout(async () => {
+            // Check if current user is still in waiting pool
+            const currentUser = waitingUsers.find((u) => u.uid === user.uid)
 
-          if (!currentUser) {
-            console.log("[v0] Current user removed from waiting pool, checking for active chat...")
-            // User was removed from pool, likely matched - check for active chat
-            const activeChat = await getActiveChatRoom(user.uid)
-            if (activeChat && isActive && !hasMatched) {
-              console.log("[v0] Found active chat room after removal, connecting...")
-              hasMatched = true
-              setStatus("Partner found! Connecting...")
-              setTimeout(() => {
-                if (isActive) onChatStarted(activeChat.id)
-              }, 500)
-            }
-            return
-          }
-
-          const currentUserBlockedList = currentUser.blockedUsers || []
-
-          // Try to find a match (need at least 2 users)
-          if (waitingUsers.length >= 2 && !matchingAttempted) {
-            // Find another user who is not blocked and not self
-            const otherUser = waitingUsers.find(
-              (u) =>
-                u.uid !== user.uid &&
-                !currentUserBlockedList.includes(u.uid) &&
-                !(u.blockedUsers || []).includes(user.uid),
-            )
-
-            if (otherUser) {
-              console.log("[v0] Found potential match:", otherUser.username)
-              matchingAttempted = true
-              setStatus("Partner found! Connecting...")
-
-              try {
-                const [currentUserInChat, otherUserInChat] = await Promise.all([
-                  isUserInActiveChat(user.uid),
-                  isUserInActiveChat(otherUser.uid),
-                ])
-
-                if (currentUserInChat || otherUserInChat) {
-                  console.log("[v0] One of the users is already in a chat, aborting match")
-                  matchingAttempted = false
-                  setStatus("Looking for a chat partner...")
-                  return
-                }
-
-                // Check if chat room already exists between these two users
-                const existingRoom = await getExistingChatRoom(user.uid, otherUser.uid)
-                if (existingRoom) {
-                  console.log("[v0] Using existing chat room:", existingRoom.id)
-                  hasMatched = true
-                  await removeFromWaitingPool(user.uid)
-                  setTimeout(() => {
-                    if (isActive) onChatStarted(existingRoom.id)
-                  }, 300)
-                  return
-                }
-
-                // Only the user with the smaller UID creates the room to prevent race conditions
-                const shouldCreateRoom = user.uid < otherUser.uid
-
-                if (shouldCreateRoom) {
-                  console.log("[v0] Creating new chat room (I have smaller UID)")
-
-                  // Create chat room atomically
-                  const chatRoomId = await createChatRoomAtomic(
-                    user.uid,
-                    otherUser.uid,
-                    userProfile.username,
-                    otherUser.username,
-                    "random",
-                  )
-
-                  console.log("[v0] Chat room created:", chatRoomId)
-                  hasMatched = true
-
-                  // Remove both users from waiting pool
-                  await Promise.all([removeFromWaitingPool(user.uid), removeFromWaitingPool(otherUser.uid)])
-
-                  // Connect to chat immediately
-                  setTimeout(() => {
-                    if (isActive) onChatStarted(chatRoomId)
-                  }, 300)
-                } else {
-                  console.log("[v0] Waiting for other user to create room (they have smaller UID)")
-                  // The other user will create the room
-                  // Our listener will detect when we're removed from waiting pool
-                  // and will find the active chat room
-                }
-              } catch (error) {
-                console.error("[v0] Error during matching:", error)
-                matchingAttempted = false
-                setStatus("Error creating chat. Retrying...")
+            if (!currentUser) {
+              console.log("[v0] Current user removed from waiting pool, checking for active chat...")
+              const activeChat = await getActiveChatRoom(user.uid)
+              if (activeChat && isActive && !hasMatched) {
+                console.log("[v0] Found active chat room after removal, connecting...")
+                hasMatched = true
+                setStatus("Partner found! Connecting...")
                 setTimeout(() => {
-                  if (isActive) setStatus("Looking for a chat partner...")
-                }, 2000)
+                  if (isActive) onChatStarted(activeChat.id)
+                }, 500)
+              }
+              return
+            }
+
+            const currentUserBlockedList = currentUser.blockedUsers || []
+
+            if (waitingUsers.length >= 2 && !matchingAttempted) {
+              const otherUser = waitingUsers.find(
+                (u) =>
+                  u.uid !== user.uid &&
+                  !currentUserBlockedList.includes(u.uid) &&
+                  !(u.blockedUsers || []).includes(user.uid),
+              )
+
+              if (otherUser) {
+                console.log("[v0] Found potential match:", otherUser.username)
+                matchingAttempted = true
+                setStatus("Partner found! Connecting...")
+
+                matchTimeout = setTimeout(() => {
+                  if (!hasMatched && isActive) {
+                    console.log("[v0] Matching timeout, resetting")
+                    matchingAttempted = false
+                    setStatus("Looking for a chat partner...")
+                  }
+                }, 30000)
+
+                try {
+                  const shouldCreateRoom = user.uid < otherUser.uid
+
+                  if (shouldCreateRoom) {
+                    console.log("[v0] Creating new chat room atomically (I have smaller UID)")
+
+                    const chatRoomId = await atomicMatchAndCreateRoom(
+                      user.uid,
+                      userProfile.username,
+                      otherUser.uid,
+                      otherUser.username,
+                    )
+
+                    if (chatRoomId) {
+                      console.log("[v0] Chat room created atomically:", chatRoomId)
+                      hasMatched = true
+                      clearTimeout(matchTimeout)
+                      setTimeout(() => {
+                        if (isActive) onChatStarted(chatRoomId)
+                      }, 300)
+                    } else {
+                      console.log("[v0] Atomic match failed, resetting")
+                      matchingAttempted = false
+                      setStatus("Looking for a chat partner...")
+                      clearTimeout(matchTimeout)
+                    }
+                  }
+                } catch (error) {
+                  console.error("[v0] Error during matching:", error)
+                  matchingAttempted = false
+                  setStatus("Error creating chat. Retrying...")
+                  clearTimeout(matchTimeout)
+                  setTimeout(() => {
+                    if (isActive) setStatus("Looking for a chat partner...")
+                  }, 2000)
+                }
               }
             }
-          }
+          }, 500) // 500ms debounce
         })
       } catch (error) {
         console.error("[v0] Error in waiting:", error)
@@ -180,7 +161,12 @@ export default function Waiting({ user, userProfile, onChatStarted, onCancel }) 
       if (unsubscribe) {
         unsubscribe()
       }
-      // Clean up waiting pool on unmount only if not matched
+      if (matchTimeout) {
+        clearTimeout(matchTimeout)
+      }
+      if (debounceTimer) {
+        clearTimeout(debounceTimer)
+      }
       if (!hasMatched) {
         removeFromWaitingPool(user.uid).catch(console.error)
       }

@@ -212,16 +212,26 @@ button:disabled {
 .chat-block-btn,
 .chat-skip-btn,
 .Tic-Tac-btn,
-.chat-end-btn {
+.chat-end-btn,
+.chat-games-btn {
   padding: 10px 18px;
   color: #fff;
   border: none;
-  border-radius: 8px;
+  border-radius: 16px; /* was 8px; unify to 16px */
   font-size: 14px;
   font-weight: 600;
   cursor: pointer;
   transition: all 0.2s ease-in-out;
-  box-shadow: 0 3px 6px rgba(0,0,0,0.15);
+  box-shadow: 0 3px 6px rgba(0, 0, 0, 0.15);
+}
+
+/* Desktop Games button gradient */
+.chat-games-btn {
+  background: linear-gradient(135deg, #3b82f6, #1e40af);
+}
+.chat-games-btn:hover {
+  background: linear-gradient(135deg, #355ecf, #1a2f8a);
+  transform: translateY(-2px);
 }
 
 /* Friend / Accept Chat */
@@ -277,7 +287,6 @@ button:disabled {
   background: linear-gradient(135deg, #c0392b, #e74c3c);
   transform: translateY(-2px);
 }
-
 
 .chat-warning-bar {
   background: #e74c3c;
@@ -342,11 +351,9 @@ button:disabled {
 }
 
 .mention-highlight {
-  background: #667eea;
-  color: white;
-  padding: 2px 6px;
-  border-radius: 4px;
-  font-weight: 600;
+  background: rgba(59, 130, 246, 0.2);
+  padding: 0 4px;
+  border-radius: 6px;
 }
 
 .chat-message-sender {
@@ -1414,7 +1421,7 @@ button:disabled {
 
 .group-chat-send-btn:hover {
   background: linear-gradient(135deg, #5568d3 0%, #653a8b 100%);
-  box-shadow: 0 6px 16px rgba(102, 126, 234, 0.4);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.18);
   transform: translateY(-2px);
 }
 
@@ -1813,7 +1820,6 @@ button:disabled {
 
 .member-status {
   color: #6b7280;
-  font-weight: 600;
 }
 
 .member-gender {
@@ -2356,4 +2362,107 @@ button:disabled {
   .mention-dropdown-item {
     padding: 10px 12px;
   }
+}
+
+/* Mobile-only Games button (top-right in the mobile chat nav) */
+.chat-mobile-games-btn {
+  background: linear-gradient(135deg, #3b82f6, #1e40af);
+  color: #fff;
+  border: none;
+  border-radius: 10px;
+  padding: 8px 12px;
+  font-size: 16px;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 3px 6px rgba(0, 0, 0, 0.15);
+}
+
+/* Optional hover for better affordance */
+.chat-mobile-games-btn:hover {
+  filter: brightness(1.05);
+  transform: translateY(-1px);
+  transition: all 0.2s ease;
+}
+
+/* Keep desktop header unchanged; mobile header already revealed via media query */
+@media (max-width: 768px) {
+  .chat-mobile-games-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+}
+
+/* Minor visual enhancement hooks for celebration and modal centering consistency */
+.game-celebrate-win {
+  animation: celebratePulse 1200ms ease-out;
+}
+.game-celebrate-lose {
+  animation: loseFade 800ms ease-out;
+}
+.game-celebrate-draw {
+  animation: drawGlow 900ms ease-in-out;
+}
+
+@keyframes celebratePulse {
+  0% {
+    box-shadow: 0 0 0 rgba(16, 185, 129, 0);
+  }
+  50% {
+    box-shadow: 0 0 24px rgba(16, 185, 129, 0.5);
+  }
+  100% {
+    box-shadow: 0 0 0 rgba(16, 185, 129, 0);
+  }
+}
+@keyframes loseFade {
+  0% {
+    box-shadow: 0 0 0 rgba(239, 68, 68, 0);
+  }
+  100% {
+    box-shadow: 0 0 16px rgba(239, 68, 68, 0.35);
+  }
+}
+@keyframes drawGlow {
+  0% {
+    box-shadow: 0 0 0 rgba(251, 191, 36, 0);
+  }
+  50% {
+    box-shadow: 0 0 18px rgba(251, 191, 36, 0.45);
+  }
+  100% {
+    box-shadow: 0 0 0 rgba(251, 191, 36, 0);
+  }
+}
+
+.chat-mobile-games-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 38px;
+  min-width: 48px; /* ensures it doesn’t shrink on small screens */
+  border-radius: 25%;
+  background: linear-gradient(135deg, #4e46e500, #4438ca00); /* modern blue gradient */
+  color: #ffffff;
+  font-size: 2rem; /* larger for better visibility */
+  font-weight: 600;
+  border: none;
+  cursor: pointer;
+  transition: transform 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.25);
+}
+
+.chat-mobile-games-btn:hover:not(:disabled) {
+  transform: scale(1.15);
+  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.35);
+  background: linear-gradient(135deg, #6365f12f, #4e46e532); /* slightly brighter on hover */
+}
+
+.chat-mobile-games-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+  transform: scale(1);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.15);
+  background: linear-gradient(135deg, #9ca3af, #6b7280); /* muted gray for disabled */
 }

@@ -1,7 +1,14 @@
 "use client"
 
 import { useState, useEffect } from "react"
-import { getUserProfile, setUserPresence, listenToAcceptedChatRequests } from "../firebase/firestore"
+import {
+  getUserProfile,
+  setUserPresence,
+  listenToAcceptedChatRequests,
+  isUserBlocked,
+  isUserBlockedBy
+} from "../firebase/firestore"
+
 import Auth from "./Auth"
 import Home from "./Home"
 import ChatRoom from "./ChatRoom"
@@ -14,10 +21,10 @@ import GroupModal from "./GroupModal"
 import GroupInviteNotification from "./GroupInviteNotification"
 
 function App() {
-  const [user, setUser] = useState(null) // { uid: nickname, nickname }
+  const [user, setUser] = useState(null)
   const [userProfile, setUserProfile] = useState(null)
   const [loading, setLoading] = useState(true)
-  const [currentView, setCurrentView] = useState("home") // "home", "waiting", "chat", "friends", "groups", "group-chat"
+  const [currentView, setCurrentView] = useState("home")
   const [chatRoomId, setChatRoomId] = useState(null)
   const [isEndingChat, setIsEndingChat] = useState(false)
   const [selectedGroupId, setSelectedGroupId] = useState(null)
@@ -44,8 +51,15 @@ function App() {
   // Listen for accepted chat requests
   useEffect(() => {
     if (!user) return
-    const unsubscribe = listenToAcceptedChatRequests(user.uid, (roomId) => {
+    const unsubscribe = listenToAcceptedChatRequests(user.uid, async (roomId, otherUserId) => {
       console.log("[v0] Chat request accepted, starting chat for requester:", roomId)
+      // Check blocking between current user and other participant before starting chat
+      const iBlocked = await isUserBlocked(user.uid, otherUserId)
+      const theyBlocked = await isUserBlockedBy(user.uid, otherUserId)
+      if (iBlocked || theyBlocked) {
+        console.log("[v0] Chat blocked due to blocking relationship")
+        return
+      }
       handleStartDirectChat(roomId)
     })
     return () => unsubscribe()

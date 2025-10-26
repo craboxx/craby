@@ -7,10 +7,12 @@ import {
   sendChatRequest,
   listenToChatRequests,
   getBlockedUsers,
+  getBlockedByUsers,
   unblockUser,
   getFriends,
   listenToPresence,
   isUserBlocked,
+  isUserBlockedBy,
 } from "../firebase/firestore"
 
 export default function Home({
@@ -26,6 +28,7 @@ export default function Home({
   const [onlineUserProfiles, setOnlineUserProfiles] = useState([])
   const [chatRequests, setChatRequests] = useState([])
   const [blockedUsers, setBlockedUsers] = useState([])
+  const [blockedByUsers, setBlockedByUsers] = useState([])
   const [friends, setFriends] = useState([])
   const [friendStatuses, setFriendStatuses] = useState({})
   const [activeTab, setActiveTab] = useState("online")
@@ -43,8 +46,12 @@ export default function Home({
   }
 
   useEffect(() => {
+    let isMounted = true
+    const unsubscribers = []
+
     // Listen to online users
     const unsubscribeOnline = listenToOnlineUsers(async (users) => {
+      if (!isMounted) return
       const otherUsers = users.filter((u) => u.uid !== user.uid)
       setOnlineUsers(otherUsers)
 
@@ -54,49 +61,77 @@ export default function Home({
           return profile ? { ...profile, status: u.status } : null
         }),
       )
-      setOnlineUserProfiles(profiles.filter((p) => p !== null))
+      if (isMounted) {
+        setOnlineUserProfiles(profiles.filter((p) => p !== null))
+      }
     })
+    unsubscribers.push(unsubscribeOnline)
 
     // Listen to chat requests
-    const unsubscribeRequests = listenToChatRequests(user.uid, setChatRequests)
+    const unsubscribeRequests = listenToChatRequests(user.uid, (requests) => {
+      if (isMounted) {
+        setChatRequests(requests)
+      }
+    })
+    unsubscribers.push(unsubscribeRequests)
 
-    // Load blocked users
-    loadBlockedUsers()
+    // Load blocked users and blocked by users
+    const loadBlockingData = async () => {
+      const blocked = await getBlockedUsers(user.uid)
+      const blockedBy = await getBlockedByUsers(user.uid)
+      if (isMounted) {
+        setBlockedUsers(blocked)
+        setBlockedByUsers(blockedBy)
+      }
+    }
+    loadBlockingData()
 
-    // Load friends
-    loadFriends()
+    // Load friends and their presence
+    const loadFriendsWithPresence = async () => {
+      const friendsList = await getFriends(user.uid)
+      if (isMounted) {
+        setFriends(friendsList)
+
+        const friendUnsubscribers = []
+        friendsList.forEach((friend) => {
+          const unsubPresence = listenToPresence(friend.id, (status) => {
+            if (isMounted) {
+              setFriendStatuses((prev) => ({
+                ...prev,
+                [friend.id]: status,
+              }))
+            }
+          })
+          friendUnsubscribers.push(unsubPresence)
+        })
+        unsubscribers.push(...friendUnsubscribers)
+      }
+    }
+
+    loadFriendsWithPresence()
 
     return () => {
-      unsubscribeOnline()
-      unsubscribeRequests()
+      isMounted = false
+      unsubscribers.forEach((unsub) => {
+        if (typeof unsub === "function") {
+          unsub()
+        }
+      })
     }
   }, [user.uid])
 
-  const loadBlockedUsers = async () => {
-    const blocked = await getBlockedUsers(user.uid)
-    setBlockedUsers(blocked)
-  }
-
-  const loadFriends = async () => {
-    const friendsList = await getFriends(user.uid)
-    setFriends(friendsList)
-
-    // Listen to each friend's presence
-    friendsList.forEach((friend) => {
-      listenToPresence(friend.id, (status) => {
-        setFriendStatuses((prev) => ({
-          ...prev,
-          [friend.id]: status,
-        }))
-      })
-    })
-  }
-
   const handleSendChatRequest = async (toUid, toUsername) => {
     try {
-      const blocked = await isUserBlocked(user.uid, toUid)
-      if (blocked) {
+      const iBlockedThem = await isUserBlocked(user.uid, toUid)
+      const theyBlockedMe = await isUserBlockedBy(user.uid, toUid)
+
+      if (iBlockedThem) {
         alert("You have blocked this user")
+        return
+      }
+
+      if (theyBlockedMe) {
+        alert("This user has blocked you")
         return
       }
 
@@ -110,6 +145,14 @@ export default function Home({
 
   const handleChatWithFriend = async (friend) => {
     try {
+      const iBlockedThem = await isUserBlocked(user.uid, friend.id)
+      const theyBlockedMe = await isUserBlockedBy(user.uid, friend.id)
+
+      if (iBlockedThem || theyBlockedMe) {
+        alert("Cannot chat with this user due to blocking")
+        return
+      }
+
       await sendChatRequest(user.uid, userProfile.username, friend.id, friend.username)
       alert(`Chat request sent to ${friend.username}! They will be notified.`)
     } catch (error) {
@@ -229,7 +272,10 @@ export default function Home({
                   <p className="home-empty-text">No other users online</p>
                 ) : (
                   onlineUserProfiles.map((profile) => {
-                    const isBlocked = blockedUsers.some((b) => b.uid === profile.uid)
+                    const iBlockedThem = blockedUsers.some((b) => b.uid === profile.uid)
+                    const theyBlockedMe = blockedByUsers.some((b) => b.uid === profile.uid)
+                    const isBlocked = iBlockedThem || theyBlockedMe
+
                     return (
                       <div key={profile.uid} className="home-user-item">
                         <div className="home-user-info">
@@ -240,7 +286,13 @@ export default function Home({
                           onClick={() => (!isBlocked ? handleSendChatRequest(profile.uid, profile.username) : null)}
                           className={`home-chat-btn ${isBlocked ? "home-chat-btn-disabled" : ""}`}
                           disabled={isBlocked}
-                          title={isBlocked ? "You have blocked this user" : "Chat"}
+                          title={
+                            iBlockedThem
+                              ? "You have blocked this user"
+                              : theyBlockedMe
+                                ? "This user has blocked you"
+                                : "Chat"
+                          }
                         >
                           Chat
                         </button>
@@ -259,23 +311,40 @@ export default function Home({
                 {friends.length === 0 ? (
                   <p className="home-empty-text">No friends yet</p>
                 ) : (
-                  friends.map((friend) => (
-                    <div key={friend.id} className="home-user-item">
-                      <div className="home-user-info">
-                        <div
-                          className="home-status-dot"
-                          style={{ background: getStatusColor(friendStatuses[friend.id]) }}
-                        />
-                        <div>
-                          <div className="home-user-username">{friend.username}</div>
-                          <div className="home-status-text-small">{getStatusText(friendStatuses[friend.id])}</div>
+                  friends.map((friend) => {
+                    const iBlockedThem = blockedUsers.some((b) => b.uid === friend.id)
+                    const theyBlockedMe = blockedByUsers.some((b) => b.uid === friend.id)
+                    const isBlocked = iBlockedThem || theyBlockedMe
+
+                    return (
+                      <div key={friend.id} className="home-user-item">
+                        <div className="home-user-info">
+                          <div
+                            className="home-status-dot"
+                            style={{ background: getStatusColor(friendStatuses[friend.id]) }}
+                          />
+                          <div>
+                            <div className="home-user-username">{friend.username}</div>
+                            <div className="home-status-text-small">{getStatusText(friendStatuses[friend.id])}</div>
+                          </div>
                         </div>
+                        <button
+                          onClick={() => (!isBlocked ? handleChatWithFriend(friend) : null)}
+                          className={`home-chat-btn ${isBlocked ? "home-chat-btn-disabled" : ""}`}
+                          disabled={isBlocked}
+                          title={
+                            iBlockedThem
+                              ? "You have blocked this user"
+                              : theyBlockedMe
+                                ? "This user has blocked you"
+                                : "Chat"
+                          }
+                        >
+                          Chat
+                        </button>
                       </div>
-                      <button onClick={() => handleChatWithFriend(friend)} className="home-chat-btn">
-                        Chat
-                      </button>
-                    </div>
-                  ))
+                    )
+                  })
                 )}
               </div>
             </div>

@@ -1,13 +1,22 @@
 "use client"
 
 import { useState, useEffect } from "react"
-import { listenToChatRequests, acceptChatRequest, rejectChatRequest } from "../firebase/firestore"
+import {
+  listenToChatRequests,
+  acceptChatRequest,
+  rejectChatRequest,
+  cleanupExpiredChatRequests,
+} from "../firebase/firestore"
 
 export default function ChatRequestModal({ user, userProfile, onChatAccepted }) {
   const [pendingRequest, setPendingRequest] = useState(null)
+  const [lastRequestTime, setLastRequestTime] = useState({})
+  const [cooldownActive, setCooldownActive] = useState({})
 
   useEffect(() => {
-    const unsubscribe = listenToChatRequests(user.uid, (requests) => {
+    let cleanupInterval = null
+
+    const unsubscribe = listenToChatRequests(user.uid, async (requests) => {
       if (requests.length > 0) {
         setPendingRequest(requests[0])
       } else {
@@ -15,7 +24,20 @@ export default function ChatRequestModal({ user, userProfile, onChatAccepted }) 
       }
     })
 
-    return () => unsubscribe()
+    cleanupInterval = setInterval(async () => {
+      try {
+        await cleanupExpiredChatRequests(user.uid)
+      } catch (error) {
+        console.error("[v0] Error cleaning up expired requests:", error)
+      }
+    }, 10000)
+
+    return () => {
+      unsubscribe()
+      if (cleanupInterval) {
+        clearInterval(cleanupInterval)
+      }
+    }
   }, [user.uid])
 
   const handleAccept = async () => {
@@ -51,14 +73,16 @@ export default function ChatRequestModal({ user, userProfile, onChatAccepted }) 
   if (!pendingRequest) return null
 
   return (
-    <div style={styles.overlay}>
-      <div style={styles.modal}>
+    <div style={styles.topRightContainer}>
+      <div style={styles.notificationCard}>
         <div style={styles.icon}>💬</div>
-        <h2 style={styles.title}>Chat Request</h2>
-        <p style={styles.message}>
-          <strong>{pendingRequest.fromUsername}</strong> wants to chat with you
-        </p>
-        <div style={styles.buttons}>
+        <div style={styles.content}>
+          <h3 style={styles.title}>Chat Request</h3>
+          <p style={styles.message}>
+            <strong>{pendingRequest.fromUsername}</strong> wants to chat
+          </p>
+        </div>
+        <div style={styles.buttonGroup}>
           <button onClick={handleAccept} style={styles.acceptButton}>
             Accept
           </button>
@@ -72,67 +96,86 @@ export default function ChatRequestModal({ user, userProfile, onChatAccepted }) 
 }
 
 const styles = {
-  overlay: {
+  topRightContainer: {
     position: "fixed",
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    background: "rgba(0, 0, 0, 0.7)",
-    display: "flex",
-    justifyContent: "center",
-    alignItems: "center",
+    top: "20px",
+    right: "20px",
     zIndex: 1000,
+    animation: "slideInRight 0.3s ease-out",
   },
-  modal: {
+  notificationCard: {
     background: "white",
-    borderRadius: "16px",
-    padding: "40px",
-    maxWidth: "400px",
-    textAlign: "center",
-    boxShadow: "0 20px 60px rgba(0,0,0,0.3)",
+    borderRadius: "12px",
+    padding: "16px",
+    boxShadow: "0 10px 30px rgba(0,0,0,0.2)",
+    display: "flex",
+    alignItems: "center",
+    gap: "12px",
+    maxWidth: "380px",
+    minWidth: "300px",
   },
   icon: {
-    fontSize: "64px",
-    marginBottom: "20px",
+    fontSize: "32px",
+    flexShrink: 0,
+  },
+  content: {
+    flex: 1,
+    minWidth: 0,
   },
   title: {
-    fontSize: "28px",
-    fontWeight: "bold",
+    fontSize: "14px",
+    fontWeight: "700",
     color: "#333",
-    marginBottom: "16px",
+    margin: "0 0 4px 0",
   },
   message: {
-    fontSize: "16px",
+    fontSize: "13px",
     color: "#666",
-    marginBottom: "32px",
-    lineHeight: "1.5",
+    margin: 0,
+    lineHeight: "1.3",
   },
-  buttons: {
+  buttonGroup: {
     display: "flex",
-    gap: "12px",
-    justifyContent: "center",
+    gap: "8px",
+    flexShrink: 0,
   },
   acceptButton: {
-    padding: "14px 32px",
+    padding: "8px 12px",
     background: "#2ecc71",
     color: "white",
     border: "none",
-    borderRadius: "8px",
-    fontSize: "16px",
+    borderRadius: "6px",
+    fontSize: "12px",
     fontWeight: "600",
     cursor: "pointer",
     transition: "transform 0.2s",
   },
   rejectButton: {
-    padding: "14px 32px",
+    padding: "8px 12px",
     background: "#e74c3c",
     color: "white",
     border: "none",
-    borderRadius: "8px",
-    fontSize: "16px",
+    borderRadius: "6px",
+    fontSize: "12px",
     fontWeight: "600",
     cursor: "pointer",
     transition: "transform 0.2s",
   },
+}
+
+if (typeof document !== "undefined") {
+  const style = document.createElement("style")
+  style.textContent = `
+    @keyframes slideInRight {
+      from {
+        transform: translateX(400px);
+        opacity: 0;
+      }
+      to {
+        transform: translateX(0);
+        opacity: 1;
+      }
+    }
+  `
+  document.head.appendChild(style)
 }

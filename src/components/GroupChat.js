@@ -50,17 +50,24 @@ export default function GroupChat({ user, groupId, onBack }) {
   const commonEmojis = ["👍", "❤️", "😂", "😮", "😢", "🎉", "🔥", "👏"]
 
   useEffect(() => {
+    let isMounted = true
+
     const unsubscribeGroup = listenToGroup(groupId, (groupData) => {
-      setGroup(groupData)
+      if (isMounted) {
+        setGroup(groupData)
+      }
     })
 
     const unsubscribeMessages = listenToGroupMessages(groupId, (msgs) => {
-      setMessages(msgs)
+      if (isMounted) {
+        setMessages(msgs)
+      }
     })
 
     loadMembers()
 
     return () => {
+      isMounted = false
       unsubscribeGroup()
       unsubscribeMessages()
     }
@@ -275,7 +282,16 @@ export default function GroupChat({ user, groupId, onBack }) {
   }
 
   const highlightMentions = (text) => {
-    return text.replace(/@(\w+)/g, '<span class="mention-highlight">@$1</span>')
+    // Escape HTML first to prevent XSS
+    const escaped = text
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;")
+
+    // Then add mention highlights
+    return escaped.replace(/@(\w+)/g, '<span class="mention-highlight">@$1</span>')
   }
 
   const extractReplyInfo = (messageObj) => {

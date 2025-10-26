@@ -15,11 +15,11 @@ import {
   arrayUnion,
   arrayRemove,
   limit,
-  runTransaction, // import runTransaction for atomic move updates
+  runTransaction,
 } from "firebase/firestore"
 import { ref, set, onValue, onDisconnect, serverTimestamp as rtdbServerTimestamp } from "firebase/database"
 import { db, rtdb } from "./firebaseConfig"
-import bcrypt from "bcryptjs" // add bcryptjs import for password hashing
+import bcrypt from "bcryptjs"
 
 // Check if username is available
 export const checkUsernameAvailable = async (username) => {
@@ -36,6 +36,7 @@ export const createUserProfile = async (uid, email, username) => {
     createdAt: serverTimestamp(),
     friends: [],
     blockedUsers: [],
+    blockedBy: [],
   })
 
   // Reserve username
@@ -197,6 +198,61 @@ export const findAndMatchWaitingUser = async (currentUserId, currentUsername, bl
   return null
 }
 
+export const atomicMatchAndCreateRoom = async (user1Id, user1Name, user2Id, user2Name) => {
+  return await runTransaction(db, async (tx) => {
+    // Check if both users are in active chats INSIDE transaction
+    const user1ChatQuery = query(
+      collection(db, "chatRooms"),
+      where("participants", "array-contains", user1Id),
+      where("active", "==", true),
+    )
+    const user2ChatQuery = query(
+      collection(db, "chatRooms"),
+      where("participants", "array-contains", user2Id),
+      where("active", "==", true),
+    )
+
+    const [user1ChatSnap, user2ChatSnap] = await Promise.all([getDocs(user1ChatQuery), getDocs(user2ChatQuery)])
+
+    if (!user1ChatSnap.empty || !user2ChatSnap.empty) {
+      console.log("[v0] One or both users already in active chat")
+      return null
+    }
+
+    // Verify both users still exist in waiting pool
+    const user1Snap = await tx.get(doc(db, "waitingPool", user1Id))
+    const user2Snap = await tx.get(doc(db, "waitingPool", user2Id))
+
+    if (!user1Snap.exists() || !user2Snap.exists()) {
+      console.log("[v0] One or both users no longer in waiting pool")
+      return null
+    }
+
+    // Create chat room
+    const sortedIds = [user1Id, user2Id].sort()
+    const roomKey = `${sortedIds[0]}_${sortedIds[1]}_${Date.now()}`
+
+    const chatRoomRef = await addDoc(collection(db, "chatRooms"), {
+      participants: [user1Id, user2Id],
+      participantNames: {
+        [user1Id]: user1Name,
+        [user2Id]: user2Name,
+      },
+      chatType: "random",
+      createdAt: serverTimestamp(),
+      active: true,
+      roomKey,
+    })
+
+    // Remove both users from waiting pool atomically
+    tx.delete(doc(db, "waitingPool", user1Id))
+    tx.delete(doc(db, "waitingPool", user2Id))
+
+    console.log("[v0] Atomic match successful, room:", chatRoomRef.id)
+    return chatRoomRef.id
+  })
+}
+
 // Create chat room
 export const createChatRoom = async (user1Id, user2Id, user1Name, user2Name, chatType = "random") => {
   // Check if chat room already exists
@@ -211,7 +267,7 @@ export const createChatRoom = async (user1Id, user2Id, user1Name, user2Name, cha
       [user1Id]: user1Name,
       [user2Id]: user2Name,
     },
-    chatType, // "random", "direct", or "friend"
+    chatType,
     createdAt: serverTimestamp(),
     active: true,
   })
@@ -249,7 +305,7 @@ export const sendMessage = async (chatRoomId, senderId, senderName, message, men
     senderId,
     senderName,
     message,
-    mentions, // Array of user IDs mentioned in the message
+    mentions,
     timestamp: serverTimestamp(),
   })
 }
@@ -336,7 +392,7 @@ export const getFriends = async (uid) => {
 export const setUserPresence = (uid, status) => {
   const presenceRef = ref(rtdb, `presence/${uid}`)
   set(presenceRef, {
-    status, // "online", "in-chat", "offline"
+    status,
     lastChanged: rtdbServerTimestamp(),
   })
 
@@ -397,13 +453,15 @@ export const getChatRequests = async (uid) => {
 }
 
 export const acceptChatRequest = async (requestId, fromUid, toUid, fromUsername, toUsername) => {
-  // Update request status
-  await updateDoc(doc(db, "chatRequests", requestId), {
-    status: "accepted",
-  })
-
   // Create direct chat room
   const chatRoomId = await createChatRoom(fromUid, toUid, fromUsername, toUsername, "direct")
+
+  await updateDoc(doc(db, "chatRequests", requestId), {
+    status: "accepted",
+    chatRoomId: chatRoomId,
+    acceptedAt: serverTimestamp(),
+  })
+
   return chatRoomId
 }
 
@@ -413,34 +471,53 @@ export const rejectChatRequest = async (requestId) => {
   })
 }
 
-export const blockUser = async (blockerUid, blockedUid, blockedUsername) => {
-  const userRef = doc(db, "users", blockerUid)
-  const userDoc = await getDoc(userRef)
+export const blockUser = async (blockerUid, blockedUid) => {
+  const blockerRef = doc(db, "users", blockerUid)
+  const blockedRef = doc(db, "users", blockedUid)
 
-  if (userDoc.exists()) {
-    const blockedUsers = userDoc.data().blockedUsers || []
+  const blockerDoc = await getDoc(blockerRef)
+  const blockedDoc = await getDoc(blockedRef)
 
-    await updateDoc(userRef, {
-      blockedUsers: arrayUnion({
-        uid: blockedUid,
-        username: blockedUsername,
-        blockedAt: new Date().toISOString(),
-      }),
+  if (blockerDoc.exists()) {
+    // Add blocked user to blocker's blockedUsers array (just UID)
+    await updateDoc(blockerRef, {
+      blockedUsers: arrayUnion({ uid: blockedUid }),
+    })
+  }
+
+  if (blockedDoc.exists()) {
+    // Add blocker to blocked user's blockedBy array (just UID)
+    await updateDoc(blockedRef, {
+      blockedBy: arrayUnion({ uid: blockerUid }),
     })
   }
 }
 
 export const unblockUser = async (blockerUid, blockedUid) => {
-  const userRef = doc(db, "users", blockerUid)
-  const userDoc = await getDoc(userRef)
+  const blockerRef = doc(db, "users", blockerUid)
+  const blockedRef = doc(db, "users", blockedUid)
 
-  if (userDoc.exists()) {
-    const blockedUsers = userDoc.data().blockedUsers || []
+  const blockerDoc = await getDoc(blockerRef)
+  const blockedDoc = await getDoc(blockedRef)
+
+  if (blockerDoc.exists()) {
+    const blockedUsers = blockerDoc.data().blockedUsers || []
     const userToUnblock = blockedUsers.find((u) => u.uid === blockedUid)
 
     if (userToUnblock) {
-      await updateDoc(userRef, {
+      await updateDoc(blockerRef, {
         blockedUsers: arrayRemove(userToUnblock),
+      })
+    }
+  }
+
+  if (blockedDoc.exists()) {
+    const blockedByUsers = blockedDoc.data().blockedBy || []
+    const blockerToRemove = blockedByUsers.find((u) => u.uid === blockerUid)
+
+    if (blockerToRemove) {
+      await updateDoc(blockedRef, {
+        blockedBy: arrayRemove(blockerToRemove),
       })
     }
   }
@@ -453,9 +530,21 @@ export const getBlockedUsers = async (uid) => {
   return userDoc.data().blockedUsers || []
 }
 
+export const getBlockedByUsers = async (uid) => {
+  const userDoc = await getDoc(doc(db, "users", uid))
+  if (!userDoc.exists()) return []
+
+  return userDoc.data().blockedBy || []
+}
+
 export const isUserBlocked = async (checkerUid, targetUid) => {
   const blockedUsers = await getBlockedUsers(checkerUid)
   return blockedUsers.some((u) => u.uid === targetUid)
+}
+
+export const isUserBlockedBy = async (checkerUid, targetUid) => {
+  const blockedByUsers = await getBlockedByUsers(checkerUid)
+  return blockedByUsers.some((u) => u.uid === targetUid)
 }
 
 export const listenToChatRequests = (uid, callback) => {
@@ -550,7 +639,7 @@ export const reportUser = async (reporterUid, reporterUsername, reportedUid, rep
     reason,
     chatRoomId,
     timestamp: serverTimestamp(),
-    status: "pending", // "pending", "reviewed", "resolved"
+    status: "pending",
   })
 }
 
@@ -562,25 +651,13 @@ export const listenToAcceptedChatRequests = (uid, callback) => {
     for (const docSnapshot of snapshot.docs) {
       const request = docSnapshot.data()
 
-      // Find the chat room that was created for this request
-      const chatRoomQuery = query(
-        collection(db, "chatRooms"),
-        where("participants", "array-contains", uid),
-        where("active", "==", true),
-      )
+      // This eliminates the race condition where the query runs before the room is indexed
+      if (request.chatRoomId) {
+        // Notify the callback with the chat room ID
+        callback(request.chatRoomId)
 
-      const chatRoomSnapshot = await getDocs(chatRoomQuery)
-
-      for (const roomDoc of chatRoomSnapshot.docs) {
-        const room = roomDoc.data()
-        if (room.participants.includes(request.toUid) && room.chatType === "direct") {
-          // Delete the accepted request so it doesn't trigger again
-          await deleteDoc(doc(db, "chatRequests", docSnapshot.id))
-
-          // Notify the callback with the chat room ID
-          callback(roomDoc.id)
-          break
-        }
+        // This ensures the requester enters the chat before cleanup
+        await deleteDoc(docSnapshot.ref)
       }
     }
   })
@@ -593,7 +670,6 @@ export const checkNicknameExists = async (nickname) => {
 }
 
 // Register a new user with nickname + password + gender
-// Note: Password is stored in plaintext here to match your spec; ideally hash before storing.
 export const registerUser = async (nickname, password, gender) => {
   const userRef = doc(db, "users", nickname)
   const exists = await getDoc(userRef)
@@ -604,18 +680,17 @@ export const registerUser = async (nickname, password, gender) => {
   const hashedPassword = bcrypt.hashSync(password, 10)
 
   await setDoc(userRef, {
-    // store nickname as the canonical id; also include uid to keep rest of app unchanged
     uid: nickname,
     nickname,
-    username: nickname, // keep 'username' for compatibility with existing UI
-    password: hashedPassword, // store hashed password under same field
+    username: nickname,
+    password: hashedPassword,
     gender,
     friends: [],
     blockedUsers: [],
+    blockedBy: [],
     createdAt: serverTimestamp(),
   })
 
-  // Return minimal session info
   return { uid: nickname, nickname }
 }
 
@@ -636,7 +711,6 @@ export const loginUser = async (nickname, password) => {
   return { uid: nickname, nickname }
 }
 
-// Create a new group
 export const createGroup = async (creatorUid, name, description = "", image = "", isPublic = true) => {
   const groupRef = await addDoc(collection(db, "groups"), {
     name,
@@ -667,7 +741,12 @@ export const getUserGroups = async (uid) => {
 
 // Get trending groups (public groups ordered by activity score)
 export const getTrendingGroups = async (limitCount = 10) => {
-  const q = query(collection(db, "groups"), orderBy("activityScore", "desc"), limit(limitCount))
+  const q = query(
+    collection(db, "groups"),
+    where("isPublic", "==", true),
+    orderBy("activityScore", "desc"),
+    limit(limitCount),
+  )
   const snapshot = await getDocs(q)
   return snapshot.docs.map((doc) => ({
     id: doc.id,
@@ -677,7 +756,12 @@ export const getTrendingGroups = async (limitCount = 10) => {
 
 // Listen to trending groups
 export const listenToTrendingGroups = (callback, limitCount = 10) => {
-  const q = query(collection(db, "groups"), orderBy("activityScore", "desc"), limit(limitCount))
+  const q = query(
+    collection(db, "groups"),
+    where("isPublic", "==", true),
+    orderBy("activityScore", "desc"),
+    limit(limitCount),
+  )
   return onSnapshot(q, (snapshot) => {
     const groups = snapshot.docs.map((doc) => ({
       id: doc.id,
@@ -809,7 +893,7 @@ export const leaveGroup = async (groupId, userId) => {
 
     await updateDoc(groupRef, {
       members: arrayRemove(userId),
-      admins: arrayRemove(userId), // Remove from admins if they were one
+      admins: arrayRemove(userId),
     })
 
     // Update activity score
@@ -843,7 +927,7 @@ export const removeMemberFromGroup = async (groupId, userId) => {
   const groupRef = doc(db, "groups", groupId)
   await updateDoc(groupRef, {
     members: arrayRemove(userId),
-    admins: arrayRemove(userId), // Also remove from admins if they were one
+    admins: arrayRemove(userId),
   })
 
   // Update activity score
@@ -906,7 +990,7 @@ export const parseMentions = (messageText, availableUsers) => {
     }
   }
 
-  return [...new Set(mentions)] // Remove duplicates
+  return [...new Set(mentions)]
 }
 
 // Update group settings
@@ -1040,7 +1124,7 @@ export const searchUsers = async (searchTerm, excludeUserIds = []) => {
       const notExcluded = !excludeUserIds.includes(user.uid || user.id)
       return matchesSearch && notExcluded
     })
-    .slice(0, 10) // Limit to 10 results
+    .slice(0, 10)
 
   return users
 }
@@ -1102,11 +1186,10 @@ export const sendTicTacToeRequest = async (chatRoomId, requesterId, responderId)
   await setDoc(
     gameRef,
     {
-      status: "request", // request -> active -> won/draw OR declined/canceled
+      status: "request",
       requesterId,
       responderId,
       createdAt: serverTimestamp(),
-      // reset transient fields but DO NOT touch scores
       board: Array(9).fill(null),
       symbols: null,
       currentTurn: null,
@@ -1134,7 +1217,7 @@ export const acceptTicTacToeRequest = async (chatRoomId, responderId) => {
     status: "active",
     board: Array(9).fill(null),
     symbols,
-    currentTurn: requesterId, // requester starts
+    currentTurn: requesterId,
     startedAt: serverTimestamp(),
   })
 }
@@ -1236,7 +1319,7 @@ export const startTicTacToeRematch = async (chatRoomId, starterUid) => {
   const snap = await getDoc(gameRef)
   if (!snap.exists()) return
   const data = snap.data()
-  if (!data.symbols || !data.symbols[starterUid]) return // must be one of players
+  if (!data.symbols || !data.symbols[starterUid]) return
 
   await updateDoc(gameRef, {
     status: "active",
@@ -1260,4 +1343,578 @@ export const closeTicTacToeGame = async (chatRoomId) => {
     endedAt: serverTimestamp(),
     celebrationAt: null,
   })
+}
+
+// Rock Paper Scissors game helpers
+export const listenToRpsGame = (chatRoomId, callback) => {
+  const gameRef = doc(db, "chatRooms", chatRoomId, "games", "rockPaperScissors")
+  return onSnapshot(gameRef, (snap) => {
+    if (snap.exists()) callback({ id: snap.id, ...snap.data() })
+    else callback(null)
+  })
+}
+
+export const sendRpsRequest = async (chatRoomId, requesterId, responderId) => {
+  const gameRef = doc(db, "chatRooms", chatRoomId, "games", "rockPaperScissors")
+  await setDoc(
+    gameRef,
+    {
+      status: "request",
+      requesterId,
+      responderId,
+      createdAt: serverTimestamp(),
+      round: 1,
+      scores: {},
+      choices: {},
+      lastRound: null,
+      winnerUid: null,
+      endedAt: null,
+    },
+    { merge: true },
+  )
+}
+
+export const acceptRpsRequest = async (chatRoomId, responderId) => {
+  const gameRef = doc(db, "chatRooms", chatRoomId, "games", "rockPaperScissors")
+  const snap = await getDoc(gameRef)
+  if (!snap.exists()) return
+  const data = snap.data()
+  if (data.status !== "request" || data.responderId !== responderId) return
+
+  await updateDoc(gameRef, {
+    status: "active",
+    startedAt: serverTimestamp(),
+    round: 1,
+    choices: {},
+    lastRound: null,
+    winnerUid: null,
+    endedAt: null,
+  })
+}
+
+export const declineRpsRequest = async (chatRoomId, responderId) => {
+  const gameRef = doc(db, "chatRooms", chatRoomId, "games", "rockPaperScissors")
+  const snap = await getDoc(gameRef)
+  if (!snap.exists()) return
+  const data = snap.data()
+  if (data.status !== "request" || data.responderId !== responderId) return
+  await updateDoc(gameRef, { status: "declined", endedAt: serverTimestamp() })
+}
+
+const rpsBeats = {
+  rock: "scissors",
+  paper: "rock",
+  scissors: "paper",
+}
+
+export const chooseRps = async (chatRoomId, playerId, choice) => {
+  const gameRef = doc(db, "chatRooms", chatRoomId, "games", "rockPaperScissors")
+  await runTransaction(db, async (tx) => {
+    const snap = await tx.get(gameRef)
+    if (!snap.exists()) return
+    const data = snap.data()
+    if (data.status !== "active") return
+
+    const round = data.round || 1
+    const prevChoices = data.choices || {}
+    const roundChoices = { ...(prevChoices[round] || {}) }
+
+    if (roundChoices[playerId]) {
+      return
+    }
+
+    roundChoices[playerId] = choice
+    const nextChoices = { ...prevChoices, [round]: roundChoices }
+
+    const players = Object.keys({
+      ...(data.requesterId ? { [data.requesterId]: true } : {}),
+      ...(data.responderId ? { [data.responderId]: true } : {}),
+    })
+
+    if (players.length < 2) {
+      tx.update(gameRef, { choices: nextChoices })
+      return
+    }
+
+    const haveBoth = roundChoices[players[0]] && roundChoices[players[1]]
+    if (!haveBoth) {
+      tx.update(gameRef, { choices: nextChoices })
+      return
+    }
+
+    const aUid = players[0]
+    const bUid = players[1]
+    const aChoice = roundChoices[aUid]
+    const bChoice = roundChoices[bUid]
+
+    let winnerUid = null
+    if (aChoice !== bChoice) {
+      winnerUid = rpsBeats[aChoice] === bChoice ? aUid : bUid
+    }
+
+    const scores = { ...(data.scores || {}) }
+    if (winnerUid) {
+      scores[winnerUid] = (scores[winnerUid] || 0) + 1
+    }
+
+    const lastRound = { round, aUid, bUid, aChoice, bChoice, winnerUid }
+
+    const aScore = scores[aUid] || 0
+    const bScore = scores[bUid] || 0
+    if (aScore >= 2 || bScore >= 2 || round >= 3) {
+      const finalWinner = aScore === bScore ? null : aScore > bScore ? aUid : bUid
+      tx.update(gameRef, {
+        choices: nextChoices,
+        scores,
+        lastRound,
+        status: "ended",
+        winnerUid: finalWinner,
+        endedAt: serverTimestamp(),
+      })
+      return
+    }
+
+    tx.update(gameRef, {
+      choices: nextChoices,
+      scores,
+      lastRound,
+      round: round + 1,
+    })
+  })
+}
+
+export const startRpsRematch = async (chatRoomId) => {
+  const gameRef = doc(db, "chatRooms", chatRoomId, "games", "rockPaperScissors")
+  const snap = await getDoc(gameRef)
+  if (!snap.exists()) return
+  const data = snap.data()
+  await updateDoc(gameRef, {
+    status: "active",
+    round: 1,
+    scores: {},
+    choices: {},
+    lastRound: null,
+    winnerUid: null,
+    startedAt: serverTimestamp(),
+    endedAt: null,
+  })
+}
+
+export const closeRpsGame = async (chatRoomId) => {
+  const gameRef = doc(db, "chatRooms", chatRoomId, "games", "rockPaperScissors")
+  await updateDoc(gameRef, {
+    status: "idle",
+    endedAt: serverTimestamp(),
+  })
+}
+
+// Bingo game helpers
+export const listenToBingoGame = (chatRoomId, callback) => {
+  const gameRef = doc(db, "chatRooms", chatRoomId, "games", "bingo")
+  return onSnapshot(gameRef, (snap) => {
+    if (snap.exists()) callback({ id: snap.id, ...snap.data() })
+    else callback(null)
+  })
+}
+
+export const sendBingoRequest = async (chatRoomId, requesterId, responderId) => {
+  const gameRef = doc(db, "chatRooms", chatRoomId, "games", "bingo")
+  await setDoc(
+    gameRef,
+    {
+      status: "request",
+      requesterId,
+      responderId,
+      createdAt: serverTimestamp(),
+      boards: {},
+      marks: {},
+      ready: {},
+      calledNumbers: [],
+      winnerUid: null,
+      endedAt: null,
+    },
+    { merge: true },
+  )
+}
+
+export const acceptBingoRequest = async (chatRoomId, responderId) => {
+  const gameRef = doc(db, "chatRooms", chatRoomId, "games", "bingo")
+  const snap = await getDoc(gameRef)
+  if (!snap.exists()) return
+  const data = snap.data()
+  if (data.status !== "request" || data.responderId !== responderId) return
+  await updateDoc(gameRef, { status: "setup", startedAt: serverTimestamp() })
+}
+
+export const declineBingoRequest = async (chatRoomId, responderId) => {
+  const gameRef = doc(db, "chatRooms", chatRoomId, "games", "bingo")
+  const snap = await getDoc(gameRef)
+  if (!snap.exists()) return
+  const data = snap.data()
+  if (data.status !== "request" || data.responderId !== responderId) return
+  await updateDoc(gameRef, { status: "declined", endedAt: serverTimestamp() })
+}
+
+export const setBingoBoard = async (chatRoomId, uid, numbers25) => {
+  if (!Array.isArray(numbers25) || numbers25.length !== 25) return
+  const gameRef = doc(db, "chatRooms", chatRoomId, "games", "bingo")
+  await runTransaction(db, async (tx) => {
+    const snap = await tx.get(gameRef)
+    if (!snap.exists()) return
+    const data = snap.data()
+    const boards = { ...(data.boards || {}) }
+    const marks = { ...(data.marks || {}) }
+    boards[uid] = numbers25
+    marks[uid] = Array(25).fill(false)
+    tx.update(gameRef, { boards, marks })
+  })
+}
+
+export const setBingoReady = async (chatRoomId, uid) => {
+  const gameRef = doc(db, "chatRooms", chatRoomId, "games", "bingo")
+  await runTransaction(db, async (tx) => {
+    const snap = await tx.get(gameRef)
+    if (!snap.exists()) return
+    const data = snap.data()
+    const ready = { ...(data.ready || {}), [uid]: true }
+
+    const otherUid =
+      data.requesterId && data.requesterId !== uid
+        ? data.requesterId
+        : data.responderId && data.responderId !== uid
+          ? data.responderId
+          : null
+    const wasOtherReady = !!(otherUid && data.ready?.[otherUid])
+    const bothReady = data.requesterId && data.responderId && ready[data.requesterId] && ready[data.responderId]
+
+    const update = { ready, status: bothReady ? "active" : data.status }
+    if (bothReady) {
+      const starter = data.starterUid || (wasOtherReady ? otherUid : uid)
+      update.starterUid = starter
+      update.currentTurn = data.currentTurn || starter
+      update.startedAt = serverTimestamp()
+    }
+    tx.update(gameRef, update)
+  })
+}
+
+export const callBingoNextNumber = async (chatRoomId, callerId) => {
+  const gameRef = doc(db, "chatRooms", chatRoomId, "games", "bingo")
+  await runTransaction(db, async (tx) => {
+    const snap = await tx.get(gameRef)
+    if (!snap.exists()) return
+    const data = snap.data()
+    if (data.status !== "active") return
+    if (data.currentTurn && data.currentTurn !== callerId) return
+
+    const called = data.calledNumbers || []
+    const next = called.length + 1
+    if (next > 25) return
+
+    const otherUid =
+      data.requesterId && data.requesterId !== callerId
+        ? data.requesterId
+        : data.responderId && data.responderId !== callerId
+          ? data.responderId
+          : callerId
+
+    tx.update(gameRef, { calledNumbers: [...called, next], currentTurn: otherUid })
+  })
+}
+
+const computeBingoLines = (marksArr) => {
+  if (!Array.isArray(marksArr) || marksArr.length !== 25) return 0
+  const idx = (r, c) => r * 5 + c
+  let lines = 0
+  for (let r = 0; r < 5; r++) {
+    if ([0, 1, 2, 3, 4].every((c) => marksArr[idx(r, c)])) lines++
+  }
+  for (let c = 0; c < 5; c++) {
+    if ([0, 1, 2, 3, 4].every((r) => marksArr[idx(r, c)])) lines++
+  }
+  if ([0, 1, 2, 3, 4].every((i) => marksArr[idx(i, i)])) lines++
+  if ([0, 1, 2, 3, 4].every((i) => marksArr[idx(i, 4 - i)])) lines++
+  return lines
+}
+
+export const toggleBingoMark = async (chatRoomId, uid, cellIndex) => {
+  const gameRef = doc(db, "chatRooms", chatRoomId, "games", "bingo")
+  await runTransaction(db, async (tx) => {
+    const snap = await tx.get(gameRef)
+    if (!snap.exists()) return
+    const data = snap.data()
+    if (data.status !== "active") return
+    const boards = data.boards || {}
+    const marks = { ...(data.marks || {}) }
+    const myBoard = boards[uid] || []
+    const myMarks = Array.isArray(marks[uid]) ? [...marks[uid]] : Array(25).fill(false)
+    const numberAtCell = myBoard[cellIndex]
+    if (!data.calledNumbers?.includes(numberAtCell)) return
+    myMarks[cellIndex] = !myMarks[cellIndex]
+    marks[uid] = myMarks
+
+    const lines = computeBingoLines(myMarks)
+    if (lines >= 5) {
+      const nextScores = { ...(data.scores || {}) }
+      nextScores[uid] = (nextScores[uid] || 0) + 1
+
+      tx.update(gameRef, {
+        marks,
+        status: "ended",
+        winnerUid: uid,
+        endedAt: serverTimestamp(),
+        scores: nextScores,
+      })
+    } else {
+      tx.update(gameRef, { marks })
+    }
+  })
+}
+
+export const startBingoRematch = async (chatRoomId) => {
+  const gameRef = doc(db, "chatRooms", chatRoomId, "games", "bingo")
+  await updateDoc(gameRef, {
+    status: "setup",
+    boards: {},
+    marks: {},
+    markSources: {},
+    ready: {},
+    calledNumbers: [],
+    winnerUid: null,
+    startedAt: serverTimestamp(),
+    endedAt: null,
+  })
+}
+
+export const closeBingoGame = async (chatRoomId) => {
+  const gameRef = doc(db, "chatRooms", chatRoomId, "games", "bingo")
+  await updateDoc(gameRef, {
+    status: "idle",
+    boards: {},
+    marks: {},
+    markSources: {},
+    ready: {},
+    calledNumbers: [],
+    winnerUid: null,
+    endedAt: serverTimestamp(),
+  })
+}
+
+// Ping Pong game helpers
+export const listenToPingPongGame = (chatRoomId, callback) => {
+  const gameRef = doc(db, "chatRooms", chatRoomId, "games", "pingPong")
+  return onSnapshot(gameRef, (snap) => {
+    if (snap.exists()) callback({ id: snap.id, ...snap.data() })
+    else callback(null)
+  })
+}
+
+export const sendPingPongRequest = async (chatRoomId, requesterId, responderId) => {
+  const gameRef = doc(db, "chatRooms", chatRoomId, "games", "pingPong")
+  await setDoc(
+    gameRef,
+    {
+      status: "request",
+      requesterId,
+      responderId,
+      createdAt: serverTimestamp(),
+      scores: {},
+      hostUid: requesterId,
+      ball: { x: 0.5, y: 0.5, vx: 0.006, vy: 0.004 },
+      paddles: {},
+      lastUpdateAt: serverTimestamp(),
+      winnerUid: null,
+    },
+    { merge: true },
+  )
+}
+
+export const acceptPingPongRequest = async (chatRoomId, responderId) => {
+  const gameRef = doc(db, "chatRooms", chatRoomId, "games", "pingPong")
+  const snap = await getDoc(gameRef)
+  if (!snap.exists()) return
+  const data = snap.data()
+  if (data.status !== "request" || data.responderId !== responderId) return
+  await updateDoc(gameRef, {
+    status: "active",
+    startedAt: serverTimestamp(),
+    paddles: {
+      [data.requesterId]: 0.5,
+      [data.responderId]: 0.5,
+    },
+  })
+}
+
+export const declinePingPongRequest = async (chatRoomId, responderId) => {
+  const gameRef = doc(db, "chatRooms", chatRoomId, "games", "pingPong")
+  const snap = await getDoc(gameRef)
+  if (!snap.exists()) return
+  const data = snap.data()
+  if (data.status !== "request" || data.responderId !== responderId) return
+  await updateDoc(gameRef, { status: "declined", endedAt: serverTimestamp() })
+}
+
+export const updatePingPongPaddle = async (chatRoomId, uid, y01) => {
+  const gameRef = doc(db, "chatRooms", chatRoomId, "games", "pingPong")
+  const snap = await getDoc(gameRef)
+  if (!snap.exists()) return
+  const data = snap.data()
+  const paddles = { ...(data.paddles || {}) }
+  paddles[uid] = Math.max(0, Math.min(1, y01))
+  await updateDoc(gameRef, { paddles })
+}
+
+export const hostUpdatePingPongState = async (chatRoomId, state) => {
+  const gameRef = doc(db, "chatRooms", chatRoomId, "games", "pingPong")
+  await updateDoc(gameRef, {
+    ...state,
+    lastUpdateAt: serverTimestamp(),
+  })
+}
+
+export const startPingPongRematch = async (chatRoomId) => {
+  const gameRef = doc(db, "chatRooms", chatRoomId, "games", "pingPong")
+  const snap = await getDoc(gameRef)
+  if (!snap.exists()) return
+  const data = snap.data()
+  await updateDoc(gameRef, {
+    status: "active",
+    ball: { x: 0.5, y: 0.5, vx: 0.006, vy: 0.004 },
+    paddles: {
+      [data.requesterId]: 0.5,
+      [data.responderId]: 0.5,
+    },
+    scores: {},
+    winnerUid: null,
+    startedAt: serverTimestamp(),
+    endedAt: null,
+  })
+}
+
+export const closePingPongGame = async (chatRoomId) => {
+  const gameRef = doc(db, "chatRooms", chatRoomId, "games", "pingPong")
+  await updateDoc(gameRef, { status: "idle", endedAt: serverTimestamp() })
+}
+
+export const playBingoNumber = async (chatRoomId, playerId, numberValue) => {
+  const gameRef = doc(db, "chatRooms", chatRoomId, "games", "bingo")
+  await runTransaction(db, async (tx) => {
+    const snap = await tx.get(gameRef)
+    if (!snap.exists()) return
+    const data = snap.data()
+    if (data.status !== "active") return
+
+    const requesterId = data.requesterId
+    const responderId = data.responderId
+    if (!requesterId || !responderId) return
+
+    if (data.currentTurn && data.currentTurn !== playerId) return
+
+    const opponentId = playerId === requesterId ? responderId : requesterId
+
+    const boards = { ...(data.boards || {}) }
+    const marks = { ...(data.marks || {}) }
+    const markSources = { ...(data.markSources || {}) }
+
+    const myBoard = boards[playerId]
+    const oppBoard = boards[opponentId]
+    if (!Array.isArray(myBoard) || myBoard.length !== 25) return
+    if (!Array.isArray(oppBoard) || oppBoard.length !== 25) return
+
+    if (!Array.isArray(marks[playerId])) marks[playerId] = Array(25).fill(false)
+    if (!Array.isArray(marks[opponentId])) marks[opponentId] = Array(25).fill(false)
+    if (!Array.isArray(markSources[playerId])) markSources[playerId] = Array(25).fill(null)
+    if (!Array.isArray(markSources[opponentId])) markSources[opponentId] = Array(25).fill(null)
+
+    const myIndex = myBoard.findIndex((n) => n === numberValue)
+    const oppIndex = oppBoard.findIndex((n) => n === numberValue)
+    if (myIndex < 0 || oppIndex < 0) return
+
+    if (marks[playerId][myIndex]) return
+
+    const nextMarksSelf = [...marks[playerId]]
+    const nextMarksOpp = [...marks[opponentId]]
+    nextMarksSelf[myIndex] = true
+    nextMarksOpp[oppIndex] = true
+
+    const nextSourcesSelf = [...markSources[playerId]]
+    const nextSourcesOpp = [...markSources[opponentId]]
+    nextSourcesSelf[myIndex] = playerId
+    nextSourcesOpp[oppIndex] = playerId
+
+    marks[playerId] = nextMarksSelf
+    marks[opponentId] = nextMarksOpp
+    markSources[playerId] = nextSourcesSelf
+    markSources[opponentId] = nextSourcesOpp
+
+    const called = Array.isArray(data.calledNumbers) ? [...data.calledNumbers] : []
+    if (!called.includes(numberValue)) called.push(numberValue)
+
+    const isLineComplete = (arr, a, b, c, d, e) => arr[a] && arr[b] && arr[c] && arr[d] && arr[e]
+
+    const lines = [
+      [0, 1, 2, 3, 4],
+      [5, 6, 7, 8, 9],
+      [10, 11, 12, 13, 14],
+      [15, 16, 17, 18, 19],
+      [20, 21, 22, 23, 24],
+      [0, 5, 10, 15, 20],
+      [1, 6, 11, 16, 21],
+      [2, 7, 12, 17, 22],
+      [3, 8, 13, 18, 23],
+      [4, 9, 14, 19, 24],
+      [0, 6, 12, 18, 24],
+      [4, 8, 12, 16, 20],
+    ]
+
+    const playerMarks = marks[playerId]
+    let completed = 0
+    for (const L of lines) {
+      if (isLineComplete(playerMarks, L[0], L[1], L[2], L[3], L[4])) completed++
+    }
+    const hasBingo = completed >= 5
+
+    const update = {
+      marks,
+      markSources,
+      calledNumbers: called,
+      lastPlayedAt: serverTimestamp(),
+    }
+
+    if (hasBingo) {
+      const nextScores = { ...(data.scores || {}) }
+      nextScores[playerId] = (nextScores[playerId] || 0) + 1
+
+      update.status = "ended"
+      update.winnerUid = playerId
+      update.endedAt = serverTimestamp()
+      update.scores = nextScores
+    } else {
+      update.currentTurn = opponentId
+    }
+
+    tx.update(gameRef, update)
+  })
+}
+
+export const cleanupExpiredChatRequests = async (recipientUid) => {
+  try {
+    const q = query(
+      collection(db, "chatRequests"),
+      where("toUid", "==", recipientUid),
+      where("status", "==", "pending"),
+    )
+    const snapshot = await getDocs(q)
+
+    for (const docSnapshot of snapshot.docs) {
+      const request = docSnapshot.data()
+      const senderInChat = await isUserInActiveChat(request.fromUid)
+
+      if (senderInChat) {
+        await deleteDoc(docSnapshot.ref)
+      }
+    }
+  } catch (error) {
+    console.error("[v0] Error cleaning up expired chat requests:", error)
+  }
 }

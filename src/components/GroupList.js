@@ -130,11 +130,11 @@ export default function GroupList({ user, onSelectGroup, onCreateGroup, onJoinGr
                     </button>
                   ) : hasPendingRequest(group) ? (
                     <button disabled className="group-pending-btn">
-                      Pending
+                      Request Pending
                     </button>
                   ) : (
                     <button onClick={() => handleJoin(group)} className="group-join-btn">
-                      {group.isPublic ? "Join" : "Request"}
+                      {group.isPublic ? "Join Group" : "Request"}
                     </button>
                   )}
                 </div>
