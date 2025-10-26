@@ -1,13 +1,13 @@
 {
   "files": {
     "main.css": "/craby/static/css/main.99e71fc5.css",
-    "main.js": "/craby/static/js/main.bd6493e5.js",
+    "main.js": "/craby/static/js/main.6a7f1084.js",
     "index.html": "/craby/index.html",
     "main.99e71fc5.css.map": "/craby/static/css/main.99e71fc5.css.map",
-    "main.bd6493e5.js.map": "/craby/static/js/main.bd6493e5.js.map"
+    "main.6a7f1084.js.map": "/craby/static/js/main.6a7f1084.js.map"
   },
   "entrypoints": [
     "static/css/main.99e71fc5.css",
-    "static/js/main.bd6493e5.js"
+    "static/js/main.6a7f1084.js"
   ]
 }
