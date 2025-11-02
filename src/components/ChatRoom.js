@@ -868,7 +868,7 @@ export default function ChatRoom({ user, userProfile, chatRoomId, onChatEnded, o
         }}
       >
         {partnerId && typingUsers[partnerId]
-          ? `${partnerName} is typing`
+          ? `${partnerName}`
           : "typing"}
       </span>
       <div
