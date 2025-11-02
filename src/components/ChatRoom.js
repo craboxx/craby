@@ -622,7 +622,7 @@ export default function ChatRoom({ user, userProfile, chatRoomId, onChatEnded, o
   const isPingHost = pingGame?.hostUid === user.uid
 
   return (
-    <div className="chat-container">
+    <div className="chat-container" style={{ position: "relative", background: "#000000", width: "100vw", height: "100vh", maxWidth: "none", margin: "0", padding: "0" }}>
       <div className="chat-mobile-nav">
         <button onClick={() => setShowMobileMenu(!showMobileMenu)} className="chat-mobile-menu-btn">
           ☰
@@ -644,23 +644,30 @@ export default function ChatRoom({ user, userProfile, chatRoomId, onChatEnded, o
 
       <div
         className="chat-box"
-        style={
-          celebrate
+        style={{
+          background: "linear-gradient(180deg, #1a1a1a 0%, #0a0a0a 100%)",
+          width: "100%",
+          height: "100%",
+          maxWidth: "none",
+          display: "flex",
+          flexDirection: "column",
+          ...(celebrate
             ? iAmWinner
               ? { boxShadow: "0 0 0 4px rgba(16,185,129,0.5)", transition: "box-shadow 200ms" }
               : iAmLoser
-                ? { boxShadow: "0 0 0 4px rgba(239,68,68,0.5)", transition: "box-shadow 200ms" }
-                : undefined
-            : undefined
-        }
+              ? { boxShadow: "0 0 0 4px rgba(239,68,68,0.5)", transition: "box-shadow 200ms" }
+              : undefined
+            : undefined)
+        }}
       >
-        <div className="chat-header">
+
+        <div className="chat-header" style={{ background: "#1a1a1a", borderBottom: "1px solid #262626" }}>
           <div>
-            <h2 className="chat-title">
+            <h2 className="chat-title" style={{ color: "#ffffff" }}>
               Chatting with {partnerName}
               {partnerLeft && <span className="chat-left-indicator"> (Left)</span>}
             </h2>
-            <p className="chat-subtitle">Be respectful and have fun!</p>
+            <p className="chat-subtitle" style={{ color: "#a8a8a8" }}>Be respectful and have fun!</p>
           </div>
           <div className="chat-header-buttons">
             <button onClick={handleSendFriendRequest} disabled={requestSent || partnerLeft} className="chat-friend-btn">
@@ -685,27 +692,70 @@ export default function ChatRoom({ user, userProfile, chatRoomId, onChatEnded, o
         </div>
 
         {showMobileMenu && (
-          <div className="chat-mobile-menu">
-            <button
-              onClick={handleSendFriendRequest}
-              disabled={requestSent || partnerLeft}
-              className="chat-mobile-menu-item"
-            >
-              {requestSent ? "Request Sent" : "Add Friend"}
-            </button>
-            <button onClick={handleReportUser} disabled={partnerLeft} className="chat-mobile-menu-item">
-              Report
-            </button>
-            <button onClick={handleBlockUser} disabled={partnerLeft} className="chat-mobile-menu-item">
-              Block
-            </button>
-            <button onClick={handleSkip} disabled={partnerLeft} className="chat-mobile-menu-item">
-              Skip
-            </button>
-            <button onClick={handleEndChat} className="chat-mobile-menu-item">
-              End Chat
-            </button>
-          </div>
+          <>
+            <div
+              onClick={() => setShowMobileMenu(false)}
+              style={{
+                position: "fixed",
+                top: 0,
+                left: 0,
+                right: 0,
+                bottom: 0,
+                zIndex: 99,
+              }}
+            />
+            <div className="chat-mobile-menu">
+              <button
+                onClick={() => {
+                  handleSendFriendRequest()
+                  setShowMobileMenu(false)
+                }}
+                disabled={requestSent || partnerLeft}
+                className="chat-mobile-menu-item"
+              >
+                {requestSent ? "Request Sent" : "Add Friend"}
+              </button>
+              <button
+                onClick={() => {
+                  handleReportUser()
+                  setShowMobileMenu(false)
+                }}
+                disabled={partnerLeft}
+                className="chat-mobile-menu-item"
+              >
+                Report
+              </button>
+              <button
+                onClick={() => {
+                  handleBlockUser()
+                  setShowMobileMenu(false)
+                }}
+                disabled={partnerLeft}
+                className="chat-mobile-menu-item"
+              >
+                Block
+              </button>
+              <button
+                onClick={() => {
+                  handleSkip()
+                  setShowMobileMenu(false)
+                }}
+                disabled={partnerLeft}
+                className="chat-mobile-menu-item"
+              >
+                Skip
+              </button>
+              <button
+                onClick={() => {
+                  handleEndChat()
+                  setShowMobileMenu(false)
+                }}
+                className="chat-mobile-menu-item"
+              >
+                End Chat
+              </button>
+            </div>
+          </>
         )}
 
         {partnerLeft && (
@@ -714,13 +764,10 @@ export default function ChatRoom({ user, userProfile, chatRoomId, onChatEnded, o
           </div>
         )}
 
-        {Object.keys(typingUsers).length > 0 && (
-          <div style={{ padding: "8px 16px", fontSize: "13px", color: "#999", fontStyle: "italic" }}>
-            {partnerId && typingUsers[partnerId] ? `${partnerName || "Partner"} is typing...` : ""}
-          </div>
-        )}
+        {/* Typing indicator moved inline with messages */}
 
-        <div className="chat-messages">
+
+        <div className="chat-messages" style={{ background: "transparent", paddingBottom: "80px" }}>
           {messages.length === 0 ? (
             <div className="chat-empty-state">
               <p>No messages yet. Say hi!</p>
@@ -731,74 +778,217 @@ export default function ChatRoom({ user, userProfile, chatRoomId, onChatEnded, o
                 key={msg.id}
                 className={`chat-message-wrapper ${msg.senderId === user.uid ? "chat-message-right" : "chat-message-left"}`}
               >
-                <div
-                  className={`chat-message ${msg.senderId === user.uid ? "chat-message-sent" : "chat-message-received"} ${isMessageMentioningMe(msg) ? "chat-message-mentioned" : ""}`}
-                >
+                  <div
+                    className={`chat-message ${
+                      msg.senderId === user.uid ? "chat-message-sent" : "chat-message-received"
+                    } ${isMessageMentioningMe(msg) ? "chat-message-mentioned" : ""}`}
+                    style={
+                      msg.senderId === user.uid
+                        ? {
+                            background: "linear-gradient(135deg, #667eea 0%, #764ba2 100%)",
+                            color: "#ffffff",
+                            borderRadius: "18px 18px 4px 18px",
+                            padding: "10px 14px",
+                            maxWidth: "75%",
+                            wordWrap: "break-word",
+                            position: "relative",
+                          }
+                        : {
+                            background: "#262626",
+                            color: "#f5f5f5",
+                            borderRadius: "18px 18px 18px 4px",
+                            padding: "10px 14px",
+                            maxWidth: "75%",
+                            wordWrap: "break-word",
+                            boxShadow: "0 2px 8px rgba(0,0,0,0.3)",
+                            position: "relative",
+                          }
+                    }
+                  >
+
                   <div className="chat-message-sender">{msg.senderName}</div>
                   <div
                     className="chat-message-text"
                     dangerouslySetInnerHTML={{ __html: highlightMentions(msg.message) }}
                   />
+                  <div
+                    style={{
+                      fontSize: "0.7rem",
+                      color: "#999",
+                      marginTop: "0.35rem",
+                      opacity: 0.8,
+                    }}
+                  >
+{msg.timestamp
+  ? (() => {
+      const t =
+        msg.timestamp && msg.timestamp.seconds
+          ? new Date(msg.timestamp.seconds * 1000)
+          : new Date(msg.timestamp);
+      return !isNaN(t)
+        ? t.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+        : "";
+    })()
+  : ""}
+
+                  </div>
                 </div>
               </div>
             ))
           )}
-          <div ref={messagesEndRef} />
+{/* Instagram-style inline typing indicator */}
+{Object.keys(typingUsers).length > 0 && (
+  <div
+    className="chat-message-wrapper chat-message-left"
+    style={{ opacity: 0.85 }}
+  >
+    <div
+      className="chat-message chat-message-received"
+      style={{
+        background: "rgba(38, 38, 38, 0.9)",
+        backdropFilter: "blur(6px)",
+        border: "1px solid rgba(255,255,255,0.1)",
+        color: "#f5f5f5",
+        borderRadius: "18px",
+        padding: "10px 16px",
+        maxWidth: "70%",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "flex-start",
+        gap: "6px",
+        boxShadow: "0 2px 8px rgba(0,0,0,0.4)",
+      }}
+    >
+      <span
+        style={{
+          fontSize: "13px",
+          fontWeight: 500,
+          fontStyle: "italic",
+          opacity: 0.85,
+        }}
+      >
+        {partnerId && typingUsers[partnerId]
+          ? `${partnerName} is typing`
+          : "typing"}
+      </span>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: "3px",
+          marginLeft: "4px",
+        }}
+      >
+        <span
+          style={{
+            width: "6px",
+            height: "6px",
+            borderRadius: "50%",
+            background: "#f5f5f5",
+            animation: "blink 1s infinite alternate",
+          }}
+        ></span>
+        <span
+          style={{
+            width: "6px",
+            height: "6px",
+            borderRadius: "50%",
+            background: "#f5f5f5",
+            animation: "blink 1s infinite alternate 0.3s",
+          }}
+        ></span>
+        <span
+          style={{
+            width: "6px",
+            height: "6px",
+            borderRadius: "50%",
+            background: "#f5f5f5",
+            animation: "blink 1s infinite alternate 0.6s",
+          }}
+        ></span>
+      </div>
+    </div>
+  </div>
+)}
+
+              
+              <div ref={messagesEndRef} />
+
         </div>
 
-        <form onSubmit={handleSendMessage} className="chat-input-container">
+        <form onSubmit={handleSendMessage} className="chat-input-container" style={{ background: "#1a1a1a", borderTop: "1px solid #262626", padding: "12px 16px" }}>
+
           <input
             ref={inputRef}
             type="text"
             value={newMessage}
             onChange={handleInputChange}
-            placeholder="Type a message..."
+            placeholder="Message..."
             className="chat-input"
+            style={{
+              background: "#262626",
+              border: "1px solid #3a3a3a",
+              borderRadius: "22px",
+              padding: "10px 18px",
+              color: "#ffffff",
+              fontSize: "15px",
+              outline: "none",
+              flex: 1,
+            }}
           />
           <button type="submit" className="chat-send-btn" disabled={partnerLeft}>
             Send
           </button>
         </form>
 
-        {showTttModal &&
-          tttGame &&
-          (tttGame.status === "active" || tttGame.status === "won" || tttGame.status === "draw") && (
-            <div
-              role="dialog"
-              aria-modal="true"
-              className="ttt-modal-overlay"
-              onClick={(e) => {
-                if (e.target === e.currentTarget) {
-                  // Don't auto-close when clicking outside
-                }
-              }}
-              style={{
-                position: "fixed",
-                inset: 0,
-                background: "rgba(0,0,0,0.45)",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                padding: 16,
-                zIndex: 50,
-              }}
-            >
-              <div
-                className="ttt-modal-content"
-                onClick={(e) => e.stopPropagation()}
-                style={{
-                  width: "100%",
-                  maxWidth: 380,
-                  background: "#0f172a",
-                  color: "#F9FAFB",
-                  borderRadius: 16,
-                  padding: 18,
-                  boxShadow: "0 10px 30px rgba(0,0,0,0.5)",
-                  position: "relative",
-                  overflow: "hidden",
-                  transition: "all 0.4s ease",
-                }}
-              >
+{showTttModal && tttGame && (tttGame.status === "active" || tttGame.status === "won" || tttGame.status === "draw") && (
+  <div
+    role="dialog"
+    aria-modal="true"
+    className="ttt-modal-overlay"
+    onClick={(e) => {
+      if (e.target === e.currentTarget) {
+        // Don't auto-close when clicking outside
+      }
+    }}
+    style={{
+      position: "absolute",
+      top: 0,
+      left: 0,
+      right: 0,
+      bottom: 60,
+      background: "rgba(0,0,255,0.1)",
+      backdropFilter: "blur(0.2px)",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      padding: 16,
+      zIndex: 10,
+      pointerEvents: "none",
+    }}
+
+  >
+
+    <div
+      className="ttt-modal-content"
+      onClick={(e) => e.stopPropagation()}
+      style={{
+        width: "100%",
+        maxWidth: 380,
+        background: "rgba(15, 23, 42, 0.95)",
+        color: "#F9FAFB",
+        borderRadius: 16,
+        padding: 18,
+        boxShadow: "0 10px 30px rgba(0,0,0,0.5)",
+        position: "relative",
+        overflow: "hidden",
+        transition: "all 0.4s ease",
+        pointerEvents: "auto",
+        backdropFilter: "blur(8px)",
+      }}
+
+    >
+
                 <style>{`
           @keyframes ttt-burst {
             0% { transform: translateY(0) scale(0.8); opacity: 0.9; }
@@ -1075,9 +1265,10 @@ export default function ChatRoom({ user, userProfile, chatRoomId, onChatEnded, o
             </div>
           )}
 
-        {showGamesMenu && (
-          <div role="dialog" aria-modal="true" onClick={handleCloseGamesMenu} style={modalOverlayStyle}>
-            <div onClick={(e) => e.stopPropagation()} style={{ ...modalCardStyle, maxWidth: 720 }}>
+{showGamesMenu && (
+  <div role="dialog" aria-modal="true" onClick={handleCloseGamesMenu} style={{...modalOverlayStyle, position: "absolute", top: 0, left: 0, right: 0, bottom: 60, background: "rgba(0,0,0,0.2)", backdropFilter: "blur(1px)", zIndex: 10, pointerEvents: "none"}}>
+    <div onClick={(e) => e.stopPropagation()} style={{ ...modalCardStyle, maxWidth: 720, background: "rgba(15, 23, 42, 0.95)", backdropFilter: "blur(8px)", pointerEvents: "auto" }}>
+
               <h3 style={{ fontSize: 20, fontWeight: 800, marginBottom: 12 }}>Choose a Game</h3>
               <div style={{ display: "grid", gap: 12 }}>
                 {[
@@ -1143,9 +1334,10 @@ export default function ChatRoom({ user, userProfile, chatRoomId, onChatEnded, o
           </div>
         )}
 
-        {pendingGameRequest && (
-          <div role="dialog" aria-modal="true" onClick={() => {}} style={modalOverlayStyle}>
-            <div onClick={(e) => e.stopPropagation()} style={modalCardStyle}>
+{pendingGameRequest && (
+  <div role="dialog" aria-modal="true" onClick={() => {}} style={{...modalOverlayStyle, position: "absolute", top: 0, left: 0, right: 0, bottom: 60, background: "rgba(0,0,0,0.3)", backdropFilter: "blur(4px)", zIndex: 10, pointerEvents: "none"}}>
+    <div onClick={(e) => e.stopPropagation()} style={{...modalCardStyle, background: "rgba(15, 23, 42, 0.85)", pointerEvents: "auto"}}>
+
               <div style={{ fontSize: 28, marginBottom: 8 }}>🎮 Game Request</div>
               <div
                 style={{
@@ -1173,11 +1365,9 @@ export default function ChatRoom({ user, userProfile, chatRoomId, onChatEnded, o
 
         {showRpsModal && rpsGame && (rpsGame.status === "active" || rpsGame.status === "ended") && (
           <>
-            <div role="dialog" aria-modal="true" style={modalOverlayStyle}>
-              <div
-                onClick={(e) => e.stopPropagation()}
-                style={{ ...modalCardStyle, maxWidth: 560, position: "relative", overflow: "hidden" }}
-              >
+  <div role="dialog" aria-modal="true" style={{...modalOverlayStyle, position: "absolute", top: 0, left: 0, right: 0, bottom: 60, background: "rgba(0,0,255,0.1)", backdropFilter: "blur(0px)", zIndex: 10, pointerEvents: "none"}}>
+    <div onClick={(e) => e.stopPropagation()} style={{...modalCardStyle, background: "rgba(15, 23, 42, 0.95)", backdropFilter: "blur(8px)", pointerEvents: "auto"}}>
+
                 <style>{`
                   .glow-btn {
                     position: relative;
@@ -1427,11 +1617,10 @@ export default function ChatRoom({ user, userProfile, chatRoomId, onChatEnded, o
           </>
         )}
 
-        {showBingoModal &&
-          bingoGame &&
-          (bingoGame.status === "setup" || bingoGame.status === "active" || bingoGame.status === "ended") && (
-            <div role="dialog" aria-modal="true" style={modalOverlayStyle}>
-              <div onClick={(e) => e.stopPropagation()} style={modalCardStyle}>
+{showBingoModal && bingoGame && (bingoGame.status === "setup" || bingoGame.status === "active" || bingoGame.status === "ended") && (
+  <div role="dialog" aria-modal="true" style={{...modalOverlayStyle, position: "absolute", top: 0, left: 0, right: 0, bottom: 60, background: "rgba(0,0,255,0.1)", backdropFilter: "blur(0px)", zIndex: 10, pointerEvents: "none"}}>
+    <div onClick={(e) => e.stopPropagation()} style={{ ...modalCardStyle, maxWidth: 560, position: "relative", overflow: "hidden", background: "rgba(15, 23, 42, 0.95)", backdropFilter: "blur(8px)", pointerEvents: "auto" }}>
+
                 <style>{`
                   @keyframes bingo-pop {
                     0% { transform: scale(0.8); opacity: 0; }
@@ -2079,9 +2268,10 @@ export default function ChatRoom({ user, userProfile, chatRoomId, onChatEnded, o
             </div>
           )}
 
-        {showPingModal && pingGame && (pingGame.status === "active" || pingGame.status === "ended") && (
-          <div role="dialog" aria-modal="true" style={modalOverlayStyle}>
-            <div onClick={(e) => e.stopPropagation()} style={modalCardStyle}>
+{showPingModal && pingGame && (pingGame.status === "active" || pingGame.status === "ended") && (
+  <div role="dialog" aria-modal="true" style={{...modalOverlayStyle, position: "absolute", top: 0, left: 0, right: 0, bottom: 60, background: "rgba(0,0,0,0.2)", backdropFilter: "blur(1px)", zIndex: 10, pointerEvents: "none"}}>
+    <div onClick={(e) => e.stopPropagation()} style={{...modalCardStyle, background: "rgba(15, 23, 42, 0.95)", backdropFilter: "blur(8px)", pointerEvents: "auto"}}>
+
               <div style={modalHeaderRow}>
                 <h3 style={{ fontWeight: 800 }}>🏓 Ping Pong</h3>
                 <button

@@ -1,5 +1,5 @@
 import { initializeApp } from "firebase/app"
-import { getAuth } from "firebase/auth"
+import { getAuth, signInAnonymously, onAuthStateChanged } from "firebase/auth"
 import { getFirestore } from "firebase/firestore"
 import { getDatabase } from "firebase/database"
 
@@ -17,3 +17,24 @@ export const app = initializeApp(firebaseConfig)
 export const auth = getAuth(app)
 export const db = getFirestore(app)
 export const rtdb = getDatabase(app)
+
+// Auto sign-in anonymously if not authenticated
+export const ensureAnonymousAuth = async () => {
+  return new Promise((resolve, reject) => {
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      unsubscribe()
+      if (user) {
+        // Already authenticated (anonymous or custom)
+        resolve(user)
+      } else {
+        // Sign in anonymously
+        try {
+          const result = await signInAnonymously(auth)
+          resolve(result.user)
+        } catch (error) {
+          reject(error)
+        }
+      }
+    })
+  })
+}

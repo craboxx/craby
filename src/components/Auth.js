@@ -1,7 +1,8 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { registerUser, loginUser, checkNicknameExists } from "../firebase/firestore"
+import { ensureAnonymousAuth } from "../firebase/firebaseConfig" // This is from code 1
 
 export default function Auth({ onAuthSuccess }) {
   const [isLogin, setIsLogin] = useState(true)
@@ -10,6 +11,16 @@ export default function Auth({ onAuthSuccess }) {
   const [gender, setGender] = useState("male")
   const [error, setError] = useState("")
   const [loading, setLoading] = useState(false)
+  const [authReady, setAuthReady] = useState(false) // This is from code 1
+
+  // Ensure anonymous auth on mount (from code 1)
+  useEffect(() => {
+    ensureAnonymousAuth()
+      .then(() => setAuthReady(true))
+      .catch((err) => {
+        setError("Failed to initialize authentication: " + err.message)
+      })
+  }, [])
 
   const validateNickname = (name) => /^[a-zA-Z0-9_]+$/.test(name)
 
@@ -26,7 +37,6 @@ export default function Auth({ onAuthSuccess }) {
           return
         }
         await loginUser(nickname.trim(), password)
-        // Pass nickname up so App sets session and presence
         onAuthSuccess(nickname.trim())
       } else {
         if (!nickname.trim()) {
@@ -62,6 +72,18 @@ export default function Auth({ onAuthSuccess }) {
     }
   }
 
+  // Only show loading screen until anonymous auth is ready
+  if (!authReady) {
+    return (
+      <div style={styles.container}>
+        <div style={styles.card}>
+          <h2>Loading...</h2>
+        </div>
+      </div>
+    )
+  }
+
+  // Existing code 2 UI remains unchanged!
   return (
     <div style={styles.container}>
       <div style={styles.card}>
@@ -136,6 +158,9 @@ export default function Auth({ onAuthSuccess }) {
     </div>
   )
 }
+
+
+
 
 const styles = {
   container: {
