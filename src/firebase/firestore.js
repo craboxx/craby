@@ -1710,46 +1710,43 @@ const rpsBeats = {
   paper: "rock",
   scissors: "paper",
 }
+const validRpsChoices = new Set(["rock", "paper", "scissors"])
+const isValidRpsChoice = (value) => typeof value === "string" && validRpsChoices.has(value)
 
 export const chooseRps = async (chatRoomId, playerId, choice) => {
+  if (!isValidRpsChoice(choice)) return
   const gameRef = doc(db, "chatRooms", chatRoomId, "games", "rockPaperScissors")
   await runTransaction(db, async (tx) => {
     const snap = await tx.get(gameRef)
     if (!snap.exists()) return
     const data = snap.data()
     if (data.status !== "active") return
+    const players = [data.requesterId, data.responderId].filter(Boolean)
+    if (players.length < 2 || !players.includes(playerId)) return
 
     const round = data.round || 1
     const prevChoices = data.choices || {}
     const roundChoices = { ...(prevChoices[round] || {}) }
+    const existingChoice = roundChoices[playerId]
 
-    if (roundChoices[playerId]) {
+    if (isValidRpsChoice(existingChoice)) {
       return
+    }
+    if (existingChoice && !isValidRpsChoice(existingChoice)) {
+      delete roundChoices[playerId]
     }
 
     roundChoices[playerId] = choice
     const nextChoices = { ...prevChoices, [round]: roundChoices }
 
-    const players = Object.keys({
-      ...(data.requesterId ? { [data.requesterId]: true } : {}),
-      ...(data.responderId ? { [data.responderId]: true } : {}),
-    })
-
-    if (players.length < 2) {
-      tx.update(gameRef, { choices: nextChoices })
-      return
-    }
-
-    const haveBoth = roundChoices[players[0]] && roundChoices[players[1]]
+    const [aUid, bUid] = players
+    const aChoice = roundChoices[aUid]
+    const bChoice = roundChoices[bUid]
+    const haveBoth = isValidRpsChoice(aChoice) && isValidRpsChoice(bChoice)
     if (!haveBoth) {
       tx.update(gameRef, { choices: nextChoices })
       return
     }
-
-    const aUid = players[0]
-    const bUid = players[1]
-    const aChoice = roundChoices[aUid]
-    const bChoice = roundChoices[bUid]
 
     let winnerUid = null
     if (aChoice !== bChoice) {
@@ -1791,7 +1788,6 @@ export const startRpsRematch = async (chatRoomId) => {
   const gameRef = doc(db, "chatRooms", chatRoomId, "games", "rockPaperScissors")
   const snap = await getDoc(gameRef)
   if (!snap.exists()) return
-  const data = snap.data()
   await updateDoc(gameRef, {
     status: "active",
     round: 1,
@@ -1859,18 +1855,34 @@ export const declineBingoRequest = async (chatRoomId, responderId) => {
   await updateDoc(gameRef, { status: "declined", endedAt: serverTimestamp() })
 }
 
+const isValidBingoBoard = (numbers25) => {
+  if (!Array.isArray(numbers25) || numbers25.length !== 25) return false
+  const normalized = numbers25.map((value) => Number(value))
+  if (normalized.some((value) => !Number.isInteger(value) || value < 1 || value > 25)) return false
+  return new Set(normalized).size === 25
+}
+
 export const setBingoBoard = async (chatRoomId, uid, numbers25) => {
-  if (!Array.isArray(numbers25) || numbers25.length !== 25) return
+  if (!isValidBingoBoard(numbers25)) return
   const gameRef = doc(db, "chatRooms", chatRoomId, "games", "bingo")
   await runTransaction(db, async (tx) => {
     const snap = await tx.get(gameRef)
     if (!snap.exists()) return
     const data = snap.data()
+    if (data.status !== "setup") return
+    const players = [data.requesterId, data.responderId].filter(Boolean)
+    if (!players.includes(uid)) return
+
+    const normalizedBoard = numbers25.map((value) => Number(value))
     const boards = { ...(data.boards || {}) }
     const marks = { ...(data.marks || {}) }
-    boards[uid] = numbers25
+    const markSources = { ...(data.markSources || {}) }
+
+    boards[uid] = normalizedBoard
     marks[uid] = Array(25).fill(false)
-    tx.update(gameRef, { boards, marks })
+    markSources[uid] = Array(25).fill(null)
+
+    tx.update(gameRef, { boards, marks, markSources })
   })
 }
 
@@ -1880,7 +1892,17 @@ export const setBingoReady = async (chatRoomId, uid) => {
     const snap = await tx.get(gameRef)
     if (!snap.exists()) return
     const data = snap.data()
+    if (data.status !== "setup") return
+
+    const players = [data.requesterId, data.responderId].filter(Boolean)
+    if (players.length !== 2 || !players.includes(uid)) return
+
+    if (!isValidBingoBoard(data.boards?.[uid])) return
+
     const ready = { ...(data.ready || {}), [uid]: true }
+    const requesterReady = !!ready[data.requesterId] && isValidBingoBoard(data.boards?.[data.requesterId])
+    const responderReady = !!ready[data.responderId] && isValidBingoBoard(data.boards?.[data.responderId])
+    const bothReady = requesterReady && responderReady
 
     const otherUid =
       data.requesterId && data.requesterId !== uid
@@ -1889,9 +1911,8 @@ export const setBingoReady = async (chatRoomId, uid) => {
           ? data.responderId
           : null
     const wasOtherReady = !!(otherUid && data.ready?.[otherUid])
-    const bothReady = data.requesterId && data.responderId && ready[data.requesterId] && ready[data.responderId]
 
-    const update = { ready, status: bothReady ? "active" : data.status }
+    const update = { ready, status: bothReady ? "active" : "setup" }
     if (bothReady) {
       const starter = data.starterUid || (wasOtherReady ? otherUid : uid)
       update.starterUid = starter
@@ -2060,12 +2081,13 @@ export const declinePingPongRequest = async (chatRoomId, responderId) => {
 
 export const updatePingPongPaddle = async (chatRoomId, uid, y01) => {
   const gameRef = doc(db, "chatRooms", chatRoomId, "games", "pingPong")
-  const snap = await getDoc(gameRef)
-  if (!snap.exists()) return
-  const data = snap.data()
-  const paddles = { ...(data.paddles || {}) }
-  paddles[uid] = Math.max(0, Math.min(1, y01))
-  await updateDoc(gameRef, { paddles })
+  const rawValue = Number(y01)
+  const normalized = Number.isFinite(rawValue) ? rawValue : 0.5
+  const clamped = Math.max(0.08, Math.min(0.92, normalized))
+  await updateDoc(gameRef, {
+    [`paddles.${uid}`]: clamped,
+    lastUpdateAt: serverTimestamp(),
+  })
 }
 
 export const hostUpdatePingPongState = async (chatRoomId, state) => {
@@ -2111,6 +2133,10 @@ export const playBingoNumber = async (chatRoomId, playerId, numberValue) => {
     const requesterId = data.requesterId
     const responderId = data.responderId
     if (!requesterId || !responderId) return
+    if (playerId !== requesterId && playerId !== responderId) return
+
+    const selectedNumber = Number(numberValue)
+    if (!Number.isInteger(selectedNumber) || selectedNumber < 1 || selectedNumber > 25) return
 
     if (data.currentTurn && data.currentTurn !== playerId) return
 
@@ -2130,8 +2156,8 @@ export const playBingoNumber = async (chatRoomId, playerId, numberValue) => {
     if (!Array.isArray(markSources[playerId])) markSources[playerId] = Array(25).fill(null)
     if (!Array.isArray(markSources[opponentId])) markSources[opponentId] = Array(25).fill(null)
 
-    const myIndex = myBoard.findIndex((n) => n === numberValue)
-    const oppIndex = oppBoard.findIndex((n) => n === numberValue)
+    const myIndex = myBoard.findIndex((n) => n === selectedNumber)
+    const oppIndex = oppBoard.findIndex((n) => n === selectedNumber)
     if (myIndex < 0 || oppIndex < 0) return
 
     if (marks[playerId][myIndex]) return
@@ -2152,7 +2178,8 @@ export const playBingoNumber = async (chatRoomId, playerId, numberValue) => {
     markSources[opponentId] = nextSourcesOpp
 
     const called = Array.isArray(data.calledNumbers) ? [...data.calledNumbers] : []
-    if (!called.includes(numberValue)) called.push(numberValue)
+    if (called.includes(selectedNumber)) return
+    called.push(selectedNumber)
 
     const isLineComplete = (arr, a, b, c, d, e) => arr[a] && arr[b] && arr[c] && arr[d] && arr[e]
 

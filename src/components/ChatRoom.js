@@ -2769,11 +2769,22 @@ const bingoCell = {
 
 function PingPongCanvas({ user, partnerId, game, isHost, onPaddle, onHostUpdate, onRematch }) {
   const canvasRef = useRef(null)
-  const animRef = useRef(null)
   const lastHostSendRef = useRef(0)
+  const lastPaddleSendRef = useRef({ at: 0, value: null })
+  const ballRef = useRef(game?.ball || { x: 0.5, y: 0.5, vx: 0.006, vy: 0.004 })
+  const paddlesRef = useRef(game?.paddles || {})
+  const scoresRef = useRef(game?.scores || {})
+  const clamp01 = (value) => Math.max(0, Math.min(1, value))
+
+  useEffect(() => {
+    ballRef.current = game?.ball || { x: 0.5, y: 0.5, vx: 0.006, vy: 0.004 }
+    paddlesRef.current = game?.paddles || {}
+    scoresRef.current = game?.scores || {}
+  }, [game?.ball, game?.paddles, game?.scores])
 
   useEffect(() => {
     const canvas = canvasRef.current
+    if (!canvas) return
     const ctx = canvas.getContext("2d")
     const w = canvas.width
     const h = canvas.height
@@ -2793,24 +2804,36 @@ function PingPongCanvas({ user, partnerId, game, isHost, onPaddle, onHostUpdate,
       ctx.setLineDash([])
 
       const paddles = game.paddles || {}
-      const meY = paddles[user.uid] ?? 0.5
-      const oppY = paddles[partnerId] ?? 0.5
+      const requesterX = clamp01(paddles[game.requesterId] ?? 0.5)
+      const responderX = clamp01(paddles[game.responderId] ?? 0.5)
+      const iAmRequester = game.requesterId === user.uid
+      const myX = iAmRequester ? requesterX : responderX
+      const oppX = iAmRequester ? responderX : requesterX
 
       // paddles
-      const padW = 80
+      const padW = 92
       const padH = 10
+      const topY = 18
+      const bottomY = h - topY - padH
+
+      const centerToLeft = (center) => {
+        const raw = center * w - padW / 2
+        return Math.max(0, Math.min(w - padW, raw))
+      }
+
       // bottom - me
       ctx.fillStyle = "#10B981"
-      ctx.fillRect((w - padW) / 2, h - padH - meY * (h * 0.6), padW, padH)
+      ctx.fillRect(centerToLeft(myX), bottomY, padW, padH)
       // top - opponent
       ctx.fillStyle = "#3B82F6"
-      ctx.fillRect((w - padW) / 2, oppY * (h * 0.6), padW, padH)
+      ctx.fillRect(centerToLeft(oppX), topY, padW, padH)
 
       // ball
-      const ball = game.ball || { x: 0.5, y: 0.5 }
+      const worldBall = game.ball || { x: 0.5, y: 0.5 }
+      const displayY = iAmRequester ? worldBall.y : 1 - worldBall.y
       ctx.fillStyle = "#fbbf24"
       ctx.beginPath()
-      ctx.arc(ball.x * w, ball.y * h, 6, 0, Math.PI * 2)
+      ctx.arc(worldBall.x * w, displayY * h, 6, 0, Math.PI * 2)
       ctx.fill()
     }
 
@@ -2818,103 +2841,149 @@ function PingPongCanvas({ user, partnerId, game, isHost, onPaddle, onHostUpdate,
   }, [game, user.uid, partnerId])
 
   useEffect(() => {
-    if (!isHost || game.status !== "active") return
+    if (!isHost || game.status !== "active" || !game.requesterId || !game.responderId) return
+
+    const requesterId = game.requesterId
+    const responderId = game.responderId
+    const paddleHalfWidth = 0.13
+    const topLine = 0.06
+    const bottomLine = 0.94
+    const minSpeedY = 0.0055
+    const maxSpeedY = 0.02
+    const maxSpeedX = 0.018
+    const winningScore = 5
+
+    const bounceOffPaddle = (ballX, paddleCenter, direction) => {
+      const offset = (ballX - paddleCenter) / paddleHalfWidth
+      const nextVxRaw = ballRef.current.vx + offset * 0.004
+      const nextVx = Math.max(-maxSpeedX, Math.min(maxSpeedX, nextVxRaw))
+      const baseVy = Math.max(minSpeedY, Math.min(maxSpeedY, Math.abs(ballRef.current.vy)))
+      const boostedVy = Math.min(maxSpeedY, baseVy * (1 + Math.min(0.16, Math.abs(offset) * 0.12)))
+      return {
+        vx: nextVx,
+        vy: direction * boostedVy,
+      }
+    }
+
+    const scorePoint = (scorerUid) => {
+      const nextScores = { ...(scoresRef.current || {}) }
+      nextScores[scorerUid] = (nextScores[scorerUid] || 0) + 1
+      scoresRef.current = nextScores
+
+      const serveVy = scorerUid === requesterId ? -0.006 : 0.006
+      const nextBall = {
+        x: 0.5,
+        y: 0.5,
+        vx: Math.random() > 0.5 ? 0.006 : -0.006,
+        vy: serveVy,
+      }
+      ballRef.current = nextBall
+
+      const winnerUid = nextScores[scorerUid] >= winningScore ? scorerUid : null
+      onHostUpdate({
+        ball: nextBall,
+        scores: nextScores,
+        status: winnerUid ? "ended" : "active",
+        winnerUid,
+      })
+    }
+
     let raf = 0
-    const step = (t) => {
+    const step = () => {
       raf = requestAnimationFrame(step)
-      // host: simulate simple physics and push to Firestore ~20 fps
+
+      // Host simulates game state and syncs to Firestore at ~20fps.
       const now = performance.now()
-      if (now - lastHostSendRef.current < 50) return // throttle
+      if (now - lastHostSendRef.current < 50) return
       lastHostSendRef.current = now
 
-      const paddles = game.paddles || {}
-      const meY = paddles[game.requesterId] ?? 0.5
-      const oppY = paddles[game.responderId] ?? 0.5
+      const paddles = paddlesRef.current || {}
+      const requesterX = clamp01(paddles[requesterId] ?? 0.5)
+      const responderX = clamp01(paddles[responderId] ?? 0.5)
+      let { x, y, vx, vy } = ballRef.current || { x: 0.5, y: 0.5, vx: 0.006, vy: 0.004 }
 
-      let { x, y, vx, vy } = game.ball || { x: 0.5, y: 0.5, vx: 0.006, vy: 0.004 }
       x += vx
       y += vy
 
       // walls
-      if (x < 0.03 || x > 0.97) vx *= -1
-
-      // paddle collisions
-      // bottom - paddle area near y ~ 0.9
-      if (y >= 0.92) {
-        const within = Math.abs(x - 0.5) <= 0.2 // centered paddle
-        if (within) {
-          vy = -Math.abs(vy)
-        } else {
-          // opponent scores
-          const scores = { ...(game.scores || {}) }
-          scores[game.responderId] = (scores[game.responderId] || 0) + 1
-          x = 0.5
-          y = 0.5
-          vx = 0.006
-          vy = -0.004
-          const winUid = scores[game.responderId] >= 5 ? game.responderId : null
-          onHostUpdate({
-            ball: { x, y, vx, vy },
-            scores,
-            status: winUid ? "ended" : "active",
-            winnerUid: winUid,
-          })
-          return
-        }
+      if (x <= 0.02) {
+        x = 0.02
+        vx = Math.abs(vx)
       }
-      // top paddle y ~ 0.08
-      if (y <= 0.08) {
-        const within = Math.abs(x - 0.5) <= 0.2
-        if (within) {
-          vy = Math.abs(vy)
+      if (x >= 0.98) {
+        x = 0.98
+        vx = -Math.abs(vx)
+      }
+
+      // Bottom edge (requester paddle)
+      if (vy > 0 && y >= bottomLine) {
+        const withinPaddle = Math.abs(x - requesterX) <= paddleHalfWidth
+        if (withinPaddle) {
+          y = bottomLine
+          ballRef.current = { x, y, vx, vy }
+          const bounced = bounceOffPaddle(x, requesterX, -1)
+          vx = bounced.vx
+          vy = bounced.vy
         } else {
-          // me scores (host assumed requester)
-          const scores = { ...(game.scores || {}) }
-          scores[game.requesterId] = (scores[game.requesterId] || 0) + 1
-          x = 0.5
-          y = 0.5
-          vx = -0.006
-          vy = 0.004
-          const winUid = scores[game.requesterId] >= 5 ? game.requesterId : null
-          onHostUpdate({
-            ball: { x, y, vx, vy },
-            scores,
-            status: winUid ? "ended" : "active",
-            winnerUid: winUid,
-          })
+          scorePoint(responderId)
           return
         }
       }
 
-      onHostUpdate({ ball: { x, y, vx, vy } })
+      // Top edge (responder paddle)
+      if (vy < 0 && y <= topLine) {
+        const withinPaddle = Math.abs(x - responderX) <= paddleHalfWidth
+        if (withinPaddle) {
+          y = topLine
+          ballRef.current = { x, y, vx, vy }
+          const bounced = bounceOffPaddle(x, responderX, 1)
+          vx = bounced.vx
+          vy = bounced.vy
+        } else {
+          scorePoint(requesterId)
+          return
+        }
+      }
+
+      const nextBall = { x, y, vx, vy }
+      ballRef.current = nextBall
+      onHostUpdate({ ball: nextBall })
     }
     raf = requestAnimationFrame(step)
     return () => cancelAnimationFrame(raf)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isHost, game?.status, game?.ball, game?.paddles, game?.scores, game.requesterId, game.responderId])
+  }, [isHost, game?.status, game?.requesterId, game?.responderId, onHostUpdate])
 
   useEffect(() => {
     const canvas = canvasRef.current
     if (!canvas) return
 
-    const onMove = (clientY) => {
+    const maybeSendPaddle = (clientX) => {
       const rect = canvas.getBoundingClientRect()
-      const y = (clientY - rect.top) / rect.height
-      onPaddle(Math.max(0, Math.min(1, y)))
+      const raw = (clientX - rect.left) / rect.width
+      const normalized = clamp01(raw)
+      const now = performance.now()
+      const last = lastPaddleSendRef.current
+      const delta = last.value === null ? 1 : Math.abs(normalized - last.value)
+
+      if (delta < 0.01 && now - last.at < 80) return
+      if (now - last.at < 35 && delta < 0.05) return
+
+      lastPaddleSendRef.current = { at: now, value: normalized }
+      onPaddle(normalized)
     }
 
-    const onMouseMove = (e) => onMove(e.clientY)
-    const onTouchMove = (e) => {
-      const t = e.touches[0]
-      if (t) onMove(t.clientY)
+    const onPointer = (e) => {
+      if (game.status !== "active") return
+      maybeSendPaddle(e.clientX)
     }
-    window.addEventListener("mousemove", onMouseMove)
-    window.addEventListener("touchmove", onTouchMove, { passive: true })
+
+    canvas.addEventListener("pointerdown", onPointer)
+    canvas.addEventListener("pointermove", onPointer)
     return () => {
-      window.removeEventListener("mousemove", onMouseMove)
-      window.removeEventListener("touchmove", onTouchMove)
+      canvas.removeEventListener("pointerdown", onPointer)
+      canvas.removeEventListener("pointermove", onPointer)
     }
-  }, [onPaddle])
+  }, [onPaddle, game.status])
 
   return (
     <div>
@@ -2930,7 +2999,13 @@ function PingPongCanvas({ user, partnerId, game, isHost, onPaddle, onHostUpdate,
         ref={canvasRef}
         width={520}
         height={320}
-        style={{ width: "100%", background: "#0b1222", borderRadius: 12 }}
+        style={{
+          width: "100%",
+          background: "#0b1222",
+          borderRadius: 12,
+          touchAction: "none",
+          cursor: game.status === "active" ? "crosshair" : "default",
+        }}
       />
       {game.status === "ended" && (
         <div style={{ textAlign: "center", marginTop: 10, fontWeight: 800 }}>
