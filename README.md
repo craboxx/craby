@@ -2,6 +2,18 @@
 
 This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
 
+## Firebase Config
+
+This app expects Firebase web config from environment variables (not hardcoded source values).
+
+1. Copy `.env.example` to `.env`
+2. Fill all `REACT_APP_FIREBASE_*` values
+3. Restart the dev server
+
+Security note:
+- Firebase web API keys are client-visible, so treat them as public identifiers.
+- Always add API restrictions + app/domain restrictions in Google Cloud Console.
+
 ## Available Scripts
 
 In the project directory, you can run:
