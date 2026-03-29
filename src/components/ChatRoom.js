@@ -45,10 +45,18 @@ import {
   hostUpdatePingPongState,
   startPingPongRematch,
   closePingPongGame,
+  createDirectCallInvite,
+  listenToLatestDirectCallInvite,
+  acceptDirectCallInvite,
+  declineDirectCallInvite,
+  cancelDirectCallInvite,
+  timeoutDirectCallInvite,
+  endDirectCallInvite,
 } from "../firebase/firestore"
 
 import { ref, set, onValue } from "firebase/database" // Import necessary Firebase Realtime Database functions
 import rtdb from "../firebase/rtdb" // Assuming rtdb is exported from firebase/rtdb
+import CallInviteModal from "./CallInviteModal"
 
 export default function ChatRoom({ user, userProfile, chatRoomId, onChatEnded, onEndChatPermanently }) {
   const [messages, setMessages] = useState([])
@@ -59,8 +67,19 @@ export default function ChatRoom({ user, userProfile, chatRoomId, onChatEnded, o
   const [requestSent, setRequestSent] = useState(false)
   const [partnerLeft, setPartnerLeft] = useState(false)
   const [showMobileMenu, setShowMobileMenu] = useState(false)
+  const [activeCallInvite, setActiveCallInvite] = useState(null)
+  const [incomingCallInvite, setIncomingCallInvite] = useState(null)
+  const [outgoingCallInvite, setOutgoingCallInvite] = useState(null)
+  const [callStatusText, setCallStatusText] = useState("")
+  const [ringSecondsLeft, setRingSecondsLeft] = useState(30)
   const messagesEndRef = useRef(null)
   const endChatClickedRef = useRef(false)
+  const handledCallStateRef = useRef("")
+  const incomingNotifiedRef = useRef("")
+  const latestOutgoingInviteRef = useRef(null)
+  const openedCallInviteIdsRef = useRef(new Set())
+  const ringTimerRef = useRef(null)
+  const statusTimerRef = useRef(null)
   const [tttGame, setTttGame] = useState(null)
   const [showTttModal, setShowTttModal] = useState(false)
   const [tttRequestSent, setTttRequestSent] = useState(false)
@@ -94,10 +113,70 @@ export default function ChatRoom({ user, userProfile, chatRoomId, onChatEnded, o
   const [pendingGameRequest, setPendingGameRequest] = useState(null) // { game: "ticTacToe"|"rps"|"bingo"|"ping", doc }
 
   const inputRef = useRef(null) // Declare inputRef here
+  const DIRECT_CALL_RING_TIMEOUT_MS = 30000
+  const sanitizeDirectCallPart = (value) => String(value || "").replace(/[^a-zA-Z0-9_-]/g, "-")
+
+  const getDirectCallRoomName = () => {
+    const safeChatRoomId = sanitizeDirectCallPart(chatRoomId || "direct")
+    const sortedIds = [user.uid, partnerId]
+      .filter(Boolean)
+      .map((id) => sanitizeDirectCallPart(id))
+      .sort()
+      .join("_")
+    return `craby-${safeChatRoomId}-${sortedIds || "solo"}`.slice(0, 120)
+  }
+
+  const getDirectCallLink = (roomName) => {
+    if (!roomName) return ""
+    return `https://meet.jit.si/${encodeURIComponent(roomName)}`
+  }
+
+  const isTrustedMeetLink = (link) => {
+    if (!link) return false
+    try {
+      const parsed = new URL(link)
+      return parsed.protocol === "https:" && parsed.hostname === "meet.jit.si"
+    } catch {
+      return false
+    }
+  }
+
+  const getCallLinkFromInvite = (invite) => {
+    if (!invite) return getDirectCallLink(getDirectCallRoomName())
+    if (invite.callLink && isTrustedMeetLink(invite.callLink)) return invite.callLink
+    if (invite.roomName) return getDirectCallLink(invite.roomName)
+    return getDirectCallLink(getDirectCallRoomName())
+  }
+
+  const openCallLinkInNewTab = ({ inviteId, callLink, force = false }) => {
+    if (!callLink) return false
+    if (!force && inviteId && openedCallInviteIdsRef.current.has(inviteId)) {
+      return true
+    }
+    const openedWindow = window.open(callLink, "_blank", "noopener,noreferrer")
+    if (!openedWindow) return false
+    if (inviteId) {
+      openedCallInviteIdsRef.current.add(inviteId)
+      if (openedCallInviteIdsRef.current.size > 20) {
+        openedCallInviteIdsRef.current.clear()
+        openedCallInviteIdsRef.current.add(inviteId)
+      }
+    }
+    return true
+  }
 
   const resetBingoLocal = () => {
     setMyBingoNumbers([])
     setBingoSetupCount(0)
+  }
+
+  const showCallStatus = (text) => {
+    if (!text) return
+    setCallStatusText(text)
+    if (statusTimerRef.current) clearTimeout(statusTimerRef.current)
+    statusTimerRef.current = setTimeout(() => {
+      setCallStatusText("")
+    }, 2600)
   }
 
   useEffect(() => {
@@ -159,6 +238,172 @@ export default function ChatRoom({ user, userProfile, chatRoomId, onChatEnded, o
 
     return () => unsubscribe()
   }, [chatRoomId])
+
+  useEffect(() => {
+    if (!partnerLeft) return
+    setActiveCallInvite(null)
+    setIncomingCallInvite(null)
+    setOutgoingCallInvite(null)
+    setCallStatusText("")
+    openedCallInviteIdsRef.current.clear()
+  }, [partnerLeft])
+
+  useEffect(() => {
+    setActiveCallInvite(null)
+    setIncomingCallInvite(null)
+    setOutgoingCallInvite(null)
+    setCallStatusText("")
+    setRingSecondsLeft(Math.floor(DIRECT_CALL_RING_TIMEOUT_MS / 1000))
+    handledCallStateRef.current = ""
+    openedCallInviteIdsRef.current.clear()
+  }, [chatRoomId])
+
+  useEffect(() => {
+    latestOutgoingInviteRef.current = outgoingCallInvite
+  }, [outgoingCallInvite])
+
+  useEffect(() => {
+    return () => {
+      if (ringTimerRef.current) clearInterval(ringTimerRef.current)
+      if (statusTimerRef.current) clearTimeout(statusTimerRef.current)
+      const pendingInvite = latestOutgoingInviteRef.current
+      if (
+        pendingInvite &&
+        pendingInvite.status === "ringing" &&
+        pendingInvite.callerId === user.uid &&
+        chatRoomId
+      ) {
+        cancelDirectCallInvite(chatRoomId, pendingInvite.id, user.uid).catch((error) =>
+          console.error("Failed to cancel call invite on unmount:", error),
+        )
+      }
+    }
+  }, [chatRoomId, user.uid])
+
+  useEffect(() => {
+    if (!chatRoomId || !user.uid) return
+
+    const unsubscribe = listenToLatestDirectCallInvite(chatRoomId, (invite) => {
+      if (!invite || invite.type !== "direct") {
+        setActiveCallInvite(null)
+        setIncomingCallInvite(null)
+        setOutgoingCallInvite(null)
+        return
+      }
+
+      const isParticipant = invite.callerId === user.uid || invite.calleeId === user.uid
+      if (!isParticipant) {
+        setActiveCallInvite(null)
+        setIncomingCallInvite(null)
+        setOutgoingCallInvite(null)
+        return
+      }
+
+      setActiveCallInvite(invite)
+      const stateKey = `${invite.id}:${invite.status}`
+      const isNewState = handledCallStateRef.current !== stateKey
+      if (isNewState) handledCallStateRef.current = stateKey
+
+      if (invite.status === "ringing") {
+        const secondsLeft = Math.max(
+          0,
+          Math.ceil((DIRECT_CALL_RING_TIMEOUT_MS - (Date.now() - (invite.createdAtMs || Date.now()))) / 1000),
+        )
+        setRingSecondsLeft(secondsLeft)
+
+        if (invite.callerId === user.uid) {
+          setOutgoingCallInvite(invite)
+          setIncomingCallInvite(null)
+          if (isNewState) showCallStatus(`Calling ${invite.calleeName || partnerName || "partner"}...`)
+        } else if (invite.calleeId === user.uid) {
+          setIncomingCallInvite(invite)
+          setOutgoingCallInvite(null)
+          if (isNewState) {
+            showCallStatus(`Incoming call from ${invite.callerName || "partner"}`)
+            const notificationKey = `${invite.id}:ringing`
+            const canNotify =
+              typeof window !== "undefined" &&
+              document.hidden &&
+              "Notification" in window &&
+              Notification.permission === "granted"
+            if (canNotify && incomingNotifiedRef.current !== notificationKey) {
+              incomingNotifiedRef.current = notificationKey
+              new Notification("Incoming video call", {
+                body: `${invite.callerName || "Someone"} is calling you on CRABY.`,
+              })
+            }
+          }
+        }
+        return
+      }
+
+      setIncomingCallInvite(null)
+      setOutgoingCallInvite(null)
+
+      if (invite.status === "accepted") {
+        if (isNewState) {
+          const callLink = isTrustedMeetLink(invite.callLink)
+            ? invite.callLink
+            : invite.roomName
+              ? `https://meet.jit.si/${encodeURIComponent(invite.roomName)}`
+              : `https://meet.jit.si/${encodeURIComponent(getDirectCallRoomName())}`
+          const opened = openCallLinkInNewTab({ inviteId: invite.id, callLink })
+          if (opened) {
+            showCallStatus("Call accepted. Opening video call in new tab...")
+          } else {
+            showCallStatus("Call accepted. Tap Video Call to open.")
+          }
+        }
+        return
+      }
+
+      if (!isNewState) return
+      if (invite.status === "declined") showCallStatus("Call declined")
+      if (invite.status === "canceled") showCallStatus("Call canceled")
+      if (invite.status === "ended" && invite.endReason === "timeout") showCallStatus("No answer")
+      if (invite.status === "ended" && invite.endReason !== "timeout") showCallStatus("Call ended")
+    })
+
+    return () => unsubscribe()
+  }, [chatRoomId, user.uid, partnerName, DIRECT_CALL_RING_TIMEOUT_MS])
+
+  useEffect(() => {
+    if (ringTimerRef.current) clearInterval(ringTimerRef.current)
+    const invite = incomingCallInvite || outgoingCallInvite
+    if (!invite || invite.status !== "ringing") return
+
+    const tick = () => {
+      const seconds = Math.max(
+        0,
+        Math.ceil((DIRECT_CALL_RING_TIMEOUT_MS - (Date.now() - (invite.createdAtMs || Date.now()))) / 1000),
+      )
+      setRingSecondsLeft(seconds)
+    }
+
+    tick()
+    ringTimerRef.current = setInterval(tick, 1000)
+    return () => {
+      if (ringTimerRef.current) clearInterval(ringTimerRef.current)
+    }
+  }, [incomingCallInvite, outgoingCallInvite, DIRECT_CALL_RING_TIMEOUT_MS])
+
+  useEffect(() => {
+    if (!outgoingCallInvite || outgoingCallInvite.status !== "ringing") return
+    if (outgoingCallInvite.callerId !== user.uid) return
+
+    const remainingMs = Math.max(
+      0,
+      DIRECT_CALL_RING_TIMEOUT_MS - (Date.now() - (outgoingCallInvite.createdAtMs || Date.now())),
+    )
+
+    const timeoutId = setTimeout(() => {
+      timeoutDirectCallInvite(chatRoomId, outgoingCallInvite.id).catch((error) =>
+        console.error("Failed to timeout direct call invite:", error),
+      )
+    }, remainingMs)
+
+    return () => clearTimeout(timeoutId)
+  }, [outgoingCallInvite, chatRoomId, user.uid, DIRECT_CALL_RING_TIMEOUT_MS])
 
   useEffect(() => {
     if (!chatRoomId) return
@@ -362,8 +607,23 @@ export default function ChatRoom({ user, userProfile, chatRoomId, onChatEnded, o
     setNewMessage("")
   }
 
+  const cleanupDirectCallBeforeExit = async () => {
+    try {
+      if (activeCallInvite?.status === "accepted" && activeCallInvite?.id) {
+        await endDirectCallInvite(chatRoomId, activeCallInvite.id, user.uid)
+        return
+      }
+      if (outgoingCallInvite?.status === "ringing" && outgoingCallInvite?.callerId === user.uid) {
+        await cancelDirectCallInvite(chatRoomId, outgoingCallInvite.id, user.uid)
+      }
+    } catch (error) {
+      console.error("Failed to clean up direct call state:", error)
+    }
+  }
+
   const handleSkip = async () => {
     console.log("[v0] User clicked Skip, returning to waiting queue")
+    await cleanupDirectCallBeforeExit()
     await endChatRoom(chatRoomId)
     await setUserPresence(user.uid, "online")
     onChatEnded("skip")
@@ -389,6 +649,7 @@ export default function ChatRoom({ user, userProfile, chatRoomId, onChatEnded, o
     if (!confirmed) return
 
     try {
+      await cleanupDirectCallBeforeExit()
       await blockUser(user.uid, partnerId, partnerName)
       await endChatRoom(chatRoomId)
       alert(`${partnerName} has been blocked`)
@@ -405,6 +666,7 @@ export default function ChatRoom({ user, userProfile, chatRoomId, onChatEnded, o
 
     onEndChatPermanently()
 
+    await cleanupDirectCallBeforeExit()
     await endChatRoom(chatRoomId)
     await setUserPresence(user.uid, "online")
 
@@ -424,6 +686,100 @@ export default function ChatRoom({ user, userProfile, chatRoomId, onChatEnded, o
       console.error("Error reporting user:", error)
       alert("Failed to report user. Please try again.")
     }
+  }
+
+  const handleOpenVideoCall = async () => {
+    if (!chatRoomId || !partnerId || partnerLeft) return
+
+    if (activeCallInvite?.status === "accepted") {
+      const callLink = getCallLinkFromInvite(activeCallInvite)
+      const opened = openCallLinkInNewTab({ inviteId: activeCallInvite.id, callLink, force: true })
+      if (!opened) {
+        showCallStatus("Unable to open call tab. Please allow popups.")
+      }
+      return
+    }
+
+    if (incomingCallInvite || outgoingCallInvite) return
+
+    const callerDisplayName = userProfile?.username || userProfile?.nickname || user?.displayName || "CRABY User"
+    const roomName = getDirectCallRoomName()
+    const callLink = getDirectCallLink(roomName)
+
+    try {
+      const callId = await createDirectCallInvite({
+        chatRoomId,
+        callerId: user.uid,
+        calleeId: partnerId,
+        callerName: callerDisplayName,
+        calleeName: partnerName || "",
+        roomName,
+        callLink,
+      })
+
+      setOutgoingCallInvite({
+        id: callId,
+        chatRoomId,
+        callId,
+        callerId: user.uid,
+        calleeId: partnerId,
+        callerName: callerDisplayName,
+        calleeName: partnerName || "",
+        roomName,
+        callLink,
+        status: "ringing",
+        type: "direct",
+        createdAtMs: Date.now(),
+      })
+      setIncomingCallInvite(null)
+      setRingSecondsLeft(Math.floor(DIRECT_CALL_RING_TIMEOUT_MS / 1000))
+    } catch (error) {
+      console.error("Error creating direct call invite:", error)
+      alert("Failed to start video call. Please try again.")
+    }
+  }
+
+  const handleAcceptIncomingCall = async () => {
+    if (!incomingCallInvite || incomingCallInvite.calleeId !== user.uid) return
+    try {
+      const accepted = await acceptDirectCallInvite(chatRoomId, incomingCallInvite.id, user.uid)
+      if (!accepted) {
+        showCallStatus("Call is no longer available.")
+        return
+      }
+      const callLink = getCallLinkFromInvite(incomingCallInvite)
+      const opened = openCallLinkInNewTab({ inviteId: incomingCallInvite.id, callLink, force: true })
+      if (!opened) {
+        showCallStatus("Call accepted. Tap Video Call to open.")
+      }
+    } catch (error) {
+      console.error("Failed to accept direct call invite:", error)
+      alert("Failed to accept call. Please try again.")
+    }
+  }
+
+  const handleDeclineIncomingCall = async () => {
+    if (!incomingCallInvite || incomingCallInvite.calleeId !== user.uid) return
+    try {
+      await declineDirectCallInvite(chatRoomId, incomingCallInvite.id, user.uid)
+    } catch (error) {
+      console.error("Failed to decline direct call invite:", error)
+      alert("Failed to decline call. Please try again.")
+    }
+  }
+
+  const handleCancelOutgoingCall = async () => {
+    if (!outgoingCallInvite || outgoingCallInvite.callerId !== user.uid) return
+    try {
+      await cancelDirectCallInvite(chatRoomId, outgoingCallInvite.id, user.uid)
+    } catch (error) {
+      console.error("Failed to cancel direct call invite:", error)
+    }
+  }
+
+  const handleDismissCallStatus = () => {
+    if (statusTimerRef.current) clearTimeout(statusTimerRef.current)
+    setCallStatusText("")
   }
 
   const handleSendTicTacToe = async () => {
@@ -620,9 +976,34 @@ export default function ChatRoom({ user, userProfile, chatRoomId, onChatEnded, o
   }
 
   const isPingHost = pingGame?.hostUid === user.uid
+  const inAcceptedCall = activeCallInvite?.status === "accepted"
+  const callInviteBusy = !!incomingCallInvite || !!outgoingCallInvite
 
   return (
     <div className="chat-container" style={{ position: "relative", background: "#000000", width: "100vw", height: "100vh", maxWidth: "none", margin: "0", padding: "0" }}>
+      {incomingCallInvite && (
+        <CallInviteModal
+          mode="incoming"
+          partnerName={incomingCallInvite.callerName || partnerName}
+          countdownSeconds={ringSecondsLeft}
+          onAccept={handleAcceptIncomingCall}
+          onDecline={handleDeclineIncomingCall}
+        />
+      )}
+
+      {outgoingCallInvite && (
+        <CallInviteModal
+          mode="outgoing"
+          partnerName={outgoingCallInvite.calleeName || partnerName}
+          countdownSeconds={ringSecondsLeft}
+          onCancel={handleCancelOutgoingCall}
+        />
+      )}
+
+      {!incomingCallInvite && !outgoingCallInvite && !!callStatusText && (
+        <CallInviteModal mode="status" statusText={callStatusText} onClose={handleDismissCallStatus} />
+      )}
+
       <div className="chat-mobile-nav">
         <button onClick={() => setShowMobileMenu(!showMobileMenu)} className="chat-mobile-menu-btn">
           ☰
@@ -673,6 +1054,9 @@ export default function ChatRoom({ user, userProfile, chatRoomId, onChatEnded, o
             <button onClick={handleSendFriendRequest} disabled={requestSent || partnerLeft} className="chat-friend-btn">
               {requestSent ? "Request Sent" : "Add Friend"}
             </button>
+            <button onClick={handleOpenVideoCall} disabled={partnerLeft || !partnerId || callInviteBusy} className="chat-video-btn">
+              {outgoingCallInvite ? "Calling..." : inAcceptedCall ? "In Call" : "Video Call"}
+            </button>
             <button onClick={handleOpenGamesMenu} disabled={partnerLeft} className="chat-games-btn">
               Games
             </button>
@@ -714,6 +1098,16 @@ export default function ChatRoom({ user, userProfile, chatRoomId, onChatEnded, o
                 className="chat-mobile-menu-item"
               >
                 {requestSent ? "Request Sent" : "Add Friend"}
+              </button>
+              <button
+                onClick={() => {
+                  handleOpenVideoCall()
+                  setShowMobileMenu(false)
+                }}
+                disabled={partnerLeft || !partnerId || callInviteBusy}
+                className="chat-mobile-menu-item"
+              >
+                {outgoingCallInvite ? "Calling..." : inAcceptedCall ? "In Call" : "Video Call"}
               </button>
               <button
                 onClick={() => {

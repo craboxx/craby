@@ -271,6 +271,7 @@ button:disabled {
 
 /* Common button style */
 .chat-friend-btn,
+.chat-video-btn,
 .chat-games-btn,
 .chat-report-btn,
 .chat-block-btn,
@@ -294,6 +295,15 @@ button:disabled {
 }
 .chat-friend-btn:hover {
   background: linear-gradient(135deg, #f6416c, #ff9a9e);
+  transform: translateY(-2px);
+}
+
+.chat-video-btn {
+  background: linear-gradient(135deg, #06b6d4, #3b82f6);
+}
+
+.chat-video-btn:hover {
+  background: linear-gradient(135deg, #3b82f6, #06b6d4);
   transform: translateY(-2px);
 }
 
@@ -1032,6 +1042,7 @@ button:disabled {
 .group-chat-invite-btn,
 .group-chat-settings-btn,
 .group-chat-members-btn,
+.group-chat-video-btn,
 .group-chat-requests-btn,
 .group-chat-leave-btn,
 .group-chat-back-btn,
@@ -1078,6 +1089,7 @@ button:disabled {
 .group-chat-invite-btn:hover,
 .group-chat-settings-btn:hover,
 .group-chat-members-btn:hover,
+.group-chat-video-btn:hover,
 .group-chat-requests-btn:hover,
 .group-chat-leave-btn:hover,
 .group-chat-back-btn:hover,
@@ -1091,6 +1103,7 @@ button:disabled {
 .group-chat-invite-btn:active,
 .group-chat-settings-btn:active,
 .group-chat-members-btn:active,
+.group-chat-video-btn:active,
 .group-chat-requests-btn:active,
 .group-chat-leave-btn:active,
 .group-chat-back-btn:active,
@@ -1125,6 +1138,15 @@ button:disabled {
 .group-chat-members-btn:hover {
   background: linear-gradient(135deg, #2c81ba 0%, #21618c 100%);
   box-shadow: 0 4px 12px rgba(52, 152, 219, 0.3);
+}
+
+.group-chat-video-btn {
+  background: linear-gradient(135deg, #06b6d4 0%, #2563eb 100%);
+}
+
+.group-chat-video-btn:hover {
+  background: linear-gradient(135deg, #0284c7 0%, #1d4ed8 100%);
+  box-shadow: 0 4px 12px rgba(37, 99, 235, 0.3);
 }
 
 .group-chat-requests-btn {
@@ -2288,6 +2310,7 @@ button:disabled {
   .group-chat-invite-btn,
   .group-chat-settings-btn,
   .group-chat-members-btn,
+  .group-chat-video-btn,
   .group-chat-requests-btn,
   .group-chat-leave-btn,
   .group-chat-back-btn {
@@ -2550,14 +2573,12 @@ button:disabled {
 }
 
 /* Ensure game overlay doesn't block input */
-.ttt-modal-overlay,
-[role="dialog"] {
+.ttt-modal-overlay {
   pointer-events: none;
 }
 
 /* But game content itself should be interactive */
-.ttt-modal-content,
-[role="dialog"] > div {
+.ttt-modal-content {
   pointer-events: auto;
 }
 
@@ -2620,4 +2641,232 @@ button:disabled {
 @keyframes blink {
   0% { opacity: 0.3; transform: translateY(1px); }
   100% { opacity: 1; transform: translateY(-1px); }
+}
+
+.jitsi-call-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.72);
+  z-index: 1200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+
+.jitsi-call-panel {
+  width: min(1100px, 94vw);
+  height: min(82vh, 760px);
+  background: #101522;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 14px;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 20px 48px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+}
+
+.jitsi-call-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  background: linear-gradient(90deg, #111827, #1e293b);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.jitsi-call-title {
+  color: #ffffff;
+  font-size: 16px;
+  margin: 0;
+}
+
+.jitsi-call-room-label {
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 12px;
+  margin: 2px 0 0 0;
+}
+
+.jitsi-call-close-btn {
+  border: none;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #ef4444, #f97316);
+  color: #fff;
+  font-weight: 600;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+
+.jitsi-call-body {
+  position: relative;
+  flex: 1;
+  min-height: 300px;
+}
+
+.jitsi-call-frame {
+  width: 100%;
+  height: 100%;
+}
+
+.jitsi-call-status,
+.jitsi-call-error {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  text-align: center;
+  padding: 16px;
+  z-index: 1;
+  font-weight: 600;
+}
+
+.jitsi-call-status {
+  pointer-events: none;
+}
+
+.jitsi-call-error {
+  color: #fecaca;
+  flex-direction: column;
+  gap: 12px;
+  pointer-events: auto;
+}
+
+.jitsi-call-open-link-btn {
+  border: none;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #0ea5e9, #2563eb);
+  color: #fff;
+  font-weight: 700;
+  padding: 10px 14px;
+  cursor: pointer;
+}
+
+@media (max-width: 768px) {
+  .jitsi-call-overlay {
+    padding: 0;
+  }
+
+  .jitsi-call-panel {
+    width: 100vw;
+    height: 100vh;
+    border-radius: 0;
+    border: none;
+  }
+
+  .jitsi-call-header {
+    padding: 10px 12px;
+  }
+
+  .jitsi-call-title {
+    font-size: 15px;
+  }
+
+  .jitsi-call-room-label {
+    max-width: 60vw;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+}
+
+.call-invite-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1150;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.42);
+  padding: 16px;
+}
+
+.call-invite-panel {
+  width: min(430px, 92vw);
+  background: linear-gradient(180deg, #0f172a, #111827);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 14px;
+  color: #ffffff;
+  padding: 16px;
+  box-shadow: 0 20px 44px rgba(0, 0, 0, 0.42);
+}
+
+.call-invite-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.call-invite-title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.call-invite-message {
+  margin: 10px 0 0 0;
+  color: rgba(255, 255, 255, 0.9);
+  line-height: 1.4;
+}
+
+.call-invite-countdown {
+  margin-top: 8px;
+  font-size: 13px;
+  color: #cbd5e1;
+}
+
+.call-invite-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 14px;
+  justify-content: flex-end;
+}
+
+.call-invite-accept-btn,
+.call-invite-decline-btn,
+.call-invite-cancel-btn,
+.call-invite-close-btn {
+  border: none;
+  border-radius: 10px;
+  padding: 9px 14px;
+  color: #fff;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.call-invite-accept-btn {
+  background: linear-gradient(135deg, #10b981, #047857);
+}
+
+.call-invite-decline-btn {
+  background: linear-gradient(135deg, #ef4444, #b91c1c);
+}
+
+.call-invite-cancel-btn,
+.call-invite-close-btn {
+  background: linear-gradient(135deg, #334155, #1f2937);
+}
+
+@media (max-width: 768px) {
+  .call-invite-panel {
+    width: min(96vw, 420px);
+    padding: 14px;
+  }
+
+  .call-invite-title {
+    font-size: 16px;
+  }
+
+  .call-invite-actions {
+    justify-content: stretch;
+  }
+
+  .call-invite-accept-btn,
+  .call-invite-decline-btn,
+  .call-invite-cancel-btn {
+    flex: 1;
+  }
 }

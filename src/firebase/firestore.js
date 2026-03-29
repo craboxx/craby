@@ -569,6 +569,170 @@ export const listenToChatRoom = (chatRoomId, callback) => {
   })
 }
 
+export const createDirectCallInvite = async ({
+  chatRoomId,
+  callerId,
+  calleeId,
+  callerName,
+  calleeName,
+  roomName,
+  callLink,
+}) => {
+  if (!chatRoomId || !callerId || !calleeId || !roomName || !callLink) {
+    throw new Error("Missing required direct call invite fields")
+  }
+
+  const nowMs = Date.now()
+  const randomPart = Math.random().toString(36).slice(2, 8)
+  const callId = `call_${nowMs}_${randomPart}`
+  const inviteRef = doc(db, "chatRooms", chatRoomId, "callInvites", callId)
+
+  await setDoc(inviteRef, {
+    chatRoomId,
+    callId,
+    callerId,
+    calleeId,
+    callerName: callerName || "",
+    calleeName: calleeName || "",
+    roomName,
+    callLink,
+    status: "ringing",
+    type: "direct",
+    createdAt: serverTimestamp(),
+    createdAtMs: nowMs,
+    updatedAt: serverTimestamp(),
+    updatedAtMs: nowMs,
+  })
+
+  return callId
+}
+
+export const listenToLatestDirectCallInvite = (chatRoomId, callback) => {
+  if (!chatRoomId) {
+    callback(null)
+    return () => {}
+  }
+
+  const q = query(collection(db, "chatRooms", chatRoomId, "callInvites"), orderBy("createdAtMs", "desc"), limit(1))
+  return onSnapshot(q, (snapshot) => {
+    if (snapshot.empty) {
+      callback(null)
+      return
+    }
+    const inviteDoc = snapshot.docs[0]
+    callback({ id: inviteDoc.id, ...inviteDoc.data() })
+  })
+}
+
+export const acceptDirectCallInvite = async (chatRoomId, callId, calleeId) => {
+  const inviteRef = doc(db, "chatRooms", chatRoomId, "callInvites", callId)
+  return await runTransaction(db, async (tx) => {
+    const snap = await tx.get(inviteRef)
+    if (!snap.exists()) return false
+    const invite = snap.data()
+    if (invite.status !== "ringing" || invite.calleeId !== calleeId) return false
+
+    const nowMs = Date.now()
+    tx.update(inviteRef, {
+      status: "accepted",
+      acceptedAt: serverTimestamp(),
+      acceptedAtMs: nowMs,
+      updatedAt: serverTimestamp(),
+      updatedAtMs: nowMs,
+    })
+    return true
+  })
+}
+
+export const declineDirectCallInvite = async (chatRoomId, callId, calleeId) => {
+  const inviteRef = doc(db, "chatRooms", chatRoomId, "callInvites", callId)
+  return await runTransaction(db, async (tx) => {
+    const snap = await tx.get(inviteRef)
+    if (!snap.exists()) return false
+    const invite = snap.data()
+    if (invite.status !== "ringing" || invite.calleeId !== calleeId) return false
+
+    const nowMs = Date.now()
+    tx.update(inviteRef, {
+      status: "declined",
+      declinedAt: serverTimestamp(),
+      endedAt: serverTimestamp(),
+      endedAtMs: nowMs,
+      endReason: "declined",
+      updatedAt: serverTimestamp(),
+      updatedAtMs: nowMs,
+    })
+    return true
+  })
+}
+
+export const cancelDirectCallInvite = async (chatRoomId, callId, callerId) => {
+  const inviteRef = doc(db, "chatRooms", chatRoomId, "callInvites", callId)
+  return await runTransaction(db, async (tx) => {
+    const snap = await tx.get(inviteRef)
+    if (!snap.exists()) return false
+    const invite = snap.data()
+    if (invite.status !== "ringing" || invite.callerId !== callerId) return false
+
+    const nowMs = Date.now()
+    tx.update(inviteRef, {
+      status: "canceled",
+      canceledAt: serverTimestamp(),
+      endedAt: serverTimestamp(),
+      endedAtMs: nowMs,
+      endReason: "canceled",
+      updatedAt: serverTimestamp(),
+      updatedAtMs: nowMs,
+    })
+    return true
+  })
+}
+
+export const timeoutDirectCallInvite = async (chatRoomId, callId) => {
+  const inviteRef = doc(db, "chatRooms", chatRoomId, "callInvites", callId)
+  return await runTransaction(db, async (tx) => {
+    const snap = await tx.get(inviteRef)
+    if (!snap.exists()) return false
+    const invite = snap.data()
+    if (invite.status !== "ringing") return false
+
+    const nowMs = Date.now()
+    tx.update(inviteRef, {
+      status: "ended",
+      endedAt: serverTimestamp(),
+      endedAtMs: nowMs,
+      endReason: "timeout",
+      updatedAt: serverTimestamp(),
+      updatedAtMs: nowMs,
+    })
+    return true
+  })
+}
+
+export const endDirectCallInvite = async (chatRoomId, callId, endedBy) => {
+  const inviteRef = doc(db, "chatRooms", chatRoomId, "callInvites", callId)
+  return await runTransaction(db, async (tx) => {
+    const snap = await tx.get(inviteRef)
+    if (!snap.exists()) return false
+    const invite = snap.data()
+
+    const isParticipant = invite.callerId === endedBy || invite.calleeId === endedBy
+    if (!isParticipant || invite.status !== "accepted") return false
+
+    const nowMs = Date.now()
+    tx.update(inviteRef, {
+      status: "ended",
+      endedAt: serverTimestamp(),
+      endedAtMs: nowMs,
+      endedBy,
+      endReason: "ended-by-user",
+      updatedAt: serverTimestamp(),
+      updatedAtMs: nowMs,
+    })
+    return true
+  })
+}
+
 export const removeFriend = async (userId, friendId) => {
   const userRef = doc(db, "users", userId)
   const friendRef = doc(db, "users", friendId)
@@ -785,6 +949,146 @@ export const listenToGroup = (groupId, callback) => {
     } else {
       callback(null)
     }
+  })
+}
+
+export const createGroupCallInvite = async ({ groupId, callerId, callerName, roomName, callLink }) => {
+  if (!groupId || !callerId || !roomName || !callLink) {
+    throw new Error("Missing required group call invite fields")
+  }
+
+  const nowMs = Date.now()
+  const randomPart = Math.random().toString(36).slice(2, 8)
+  const callId = `group_call_${nowMs}_${randomPart}`
+  const inviteRef = doc(db, "groups", groupId, "callInvites", callId)
+
+  await setDoc(inviteRef, {
+    groupId,
+    callId,
+    callerId,
+    callerName: callerName || "",
+    roomName,
+    callLink,
+    status: "ringing",
+    type: "group",
+    acceptedBy: [callerId],
+    declinedBy: [],
+    createdAt: serverTimestamp(),
+    createdAtMs: nowMs,
+    updatedAt: serverTimestamp(),
+    updatedAtMs: nowMs,
+  })
+
+  return callId
+}
+
+export const listenToLatestGroupCallInvite = (groupId, callback) => {
+  if (!groupId) {
+    callback(null)
+    return () => {}
+  }
+
+  const q = query(collection(db, "groups", groupId, "callInvites"), orderBy("createdAtMs", "desc"), limit(1))
+  return onSnapshot(q, (snapshot) => {
+    if (snapshot.empty) {
+      callback(null)
+      return
+    }
+    const inviteDoc = snapshot.docs[0]
+    callback({ id: inviteDoc.id, ...inviteDoc.data() })
+  })
+}
+
+export const acceptGroupCallInvite = async (groupId, callId, userId) => {
+  const inviteRef = doc(db, "groups", groupId, "callInvites", callId)
+  return await runTransaction(db, async (tx) => {
+    const snap = await tx.get(inviteRef)
+    if (!snap.exists()) return false
+
+    const invite = snap.data()
+    if (invite.status !== "ringing" && invite.status !== "active") return false
+
+    const nowMs = Date.now()
+    const update = {
+      acceptedBy: arrayUnion(userId),
+      declinedBy: arrayRemove(userId),
+      updatedAt: serverTimestamp(),
+      updatedAtMs: nowMs,
+    }
+
+    if (invite.status === "ringing") {
+      update.status = "active"
+      update.activatedAt = serverTimestamp()
+      update.activatedAtMs = nowMs
+    }
+
+    tx.update(inviteRef, update)
+    return true
+  })
+}
+
+export const declineGroupCallInvite = async (groupId, callId, userId) => {
+  const inviteRef = doc(db, "groups", groupId, "callInvites", callId)
+  return await runTransaction(db, async (tx) => {
+    const snap = await tx.get(inviteRef)
+    if (!snap.exists()) return false
+
+    const invite = snap.data()
+    if (invite.status !== "ringing" && invite.status !== "active") return false
+
+    const nowMs = Date.now()
+    tx.update(inviteRef, {
+      declinedBy: arrayUnion(userId),
+      acceptedBy: arrayRemove(userId),
+      updatedAt: serverTimestamp(),
+      updatedAtMs: nowMs,
+    })
+    return true
+  })
+}
+
+export const cancelGroupCallInvite = async (groupId, callId, callerId) => {
+  const inviteRef = doc(db, "groups", groupId, "callInvites", callId)
+  return await runTransaction(db, async (tx) => {
+    const snap = await tx.get(inviteRef)
+    if (!snap.exists()) return false
+
+    const invite = snap.data()
+    if ((invite.status !== "ringing" && invite.status !== "active") || invite.callerId !== callerId) return false
+
+    const nowMs = Date.now()
+    tx.update(inviteRef, {
+      status: "canceled",
+      endedAt: serverTimestamp(),
+      endedAtMs: nowMs,
+      endedBy: callerId,
+      endReason: "canceled",
+      updatedAt: serverTimestamp(),
+      updatedAtMs: nowMs,
+    })
+    return true
+  })
+}
+
+export const timeoutGroupCallInvite = async (groupId, callId) => {
+  const inviteRef = doc(db, "groups", groupId, "callInvites", callId)
+  return await runTransaction(db, async (tx) => {
+    const snap = await tx.get(inviteRef)
+    if (!snap.exists()) return false
+
+    const invite = snap.data()
+    if (invite.status !== "ringing") return false
+
+    const nowMs = Date.now()
+    tx.update(inviteRef, {
+      status: "ended",
+      endedAt: serverTimestamp(),
+      endedAtMs: nowMs,
+      endReason: "timeout",
+      updatedAt: serverTimestamp(),
+      updatedAtMs: nowMs,
+    })
+    return true
   })
 }
 

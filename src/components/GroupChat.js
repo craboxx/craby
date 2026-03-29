@@ -18,10 +18,17 @@ import {
   deleteGroupMessage,
   editGroupMessage,
   getUserProfile,
+  createGroupCallInvite,
+  listenToLatestGroupCallInvite,
+  acceptGroupCallInvite,
+  declineGroupCallInvite,
+  cancelGroupCallInvite,
+  timeoutGroupCallInvite,
 } from "../firebase/firestore"
 import GroupSettingsModal from "./GroupSettingsModal"
 import InviteMemberModal from "./InviteMemberModal"
 import MembersModal from "./MembersModal"
+import CallInviteModal from "./CallInviteModal"
 
 export default function GroupChat({ user, groupId, onBack }) {
   const [group, setGroup] = useState(null)
@@ -31,6 +38,11 @@ export default function GroupChat({ user, groupId, onBack }) {
   const [showMembersModal, setShowMembersModal] = useState(false)
   const [showJoinRequests, setShowJoinRequests] = useState(false)
   const [showMobileMenu, setShowMobileMenu] = useState(false)
+  const [activeGroupCallInvite, setActiveGroupCallInvite] = useState(null)
+  const [incomingGroupCallInvite, setIncomingGroupCallInvite] = useState(null)
+  const [outgoingGroupCallInvite, setOutgoingGroupCallInvite] = useState(null)
+  const [groupCallStatusText, setGroupCallStatusText] = useState("")
+  const [groupRingSecondsLeft, setGroupRingSecondsLeft] = useState(30)
   const [showSettings, setShowSettings] = useState(false)
   const [showInviteModal, setShowInviteModal] = useState(false)
   const [editingMessageId, setEditingMessageId] = useState(null)
@@ -46,6 +58,68 @@ export default function GroupChat({ user, groupId, onBack }) {
 
   const messagesEndRef = useRef(null)
   const inputRef = useRef(null)
+  const handledGroupCallStateRef = useRef("")
+  const latestOutgoingGroupInviteRef = useRef(null)
+  const openedGroupCallInviteIdsRef = useRef(new Set())
+  const groupRingTimerRef = useRef(null)
+  const groupStatusTimerRef = useRef(null)
+  const incomingGroupNotifiedRef = useRef("")
+  const GROUP_CALL_RING_TIMEOUT_MS = 30000
+
+  const sanitizeGroupCallPart = (value) => String(value || "").replace(/[^a-zA-Z0-9_-]/g, "-")
+
+  const getGroupCallRoomName = () => {
+    const safeGroupId = sanitizeGroupCallPart(groupId || "group")
+    return `craby-group-${safeGroupId}`.slice(0, 120)
+  }
+
+  const getGroupCallLink = (roomName) => {
+    if (!roomName) return ""
+    return `https://meet.jit.si/${encodeURIComponent(roomName)}`
+  }
+
+  const isTrustedMeetLink = (link) => {
+    if (!link) return false
+    try {
+      const parsed = new URL(link)
+      return parsed.protocol === "https:" && parsed.hostname === "meet.jit.si"
+    } catch {
+      return false
+    }
+  }
+
+  const getGroupCallLinkFromInvite = (invite) => {
+    if (!invite) return getGroupCallLink(getGroupCallRoomName())
+    if (invite.callLink && isTrustedMeetLink(invite.callLink)) return invite.callLink
+    if (invite.roomName) return getGroupCallLink(invite.roomName)
+    return getGroupCallLink(getGroupCallRoomName())
+  }
+
+  const openGroupCallLinkInNewTab = ({ inviteId, callLink, force = false }) => {
+    if (!callLink) return false
+    if (!force && inviteId && openedGroupCallInviteIdsRef.current.has(inviteId)) {
+      return true
+    }
+    const openedWindow = window.open(callLink, "_blank", "noopener,noreferrer")
+    if (!openedWindow) return false
+    if (inviteId) {
+      openedGroupCallInviteIdsRef.current.add(inviteId)
+      if (openedGroupCallInviteIdsRef.current.size > 40) {
+        openedGroupCallInviteIdsRef.current.clear()
+        openedGroupCallInviteIdsRef.current.add(inviteId)
+      }
+    }
+    return true
+  }
+
+  const showGroupCallStatus = (text) => {
+    if (!text) return
+    setGroupCallStatusText(text)
+    if (groupStatusTimerRef.current) clearTimeout(groupStatusTimerRef.current)
+    groupStatusTimerRef.current = setTimeout(() => {
+      setGroupCallStatusText("")
+    }, 2800)
+  }
 
   const commonEmojis = ["👍", "❤️", "😂", "😮", "😢", "🎉", "🔥", "👏"]
 
@@ -72,6 +146,157 @@ export default function GroupChat({ user, groupId, onBack }) {
       unsubscribeMessages()
     }
   }, [groupId])
+
+  useEffect(() => {
+    setActiveGroupCallInvite(null)
+    setIncomingGroupCallInvite(null)
+    setOutgoingGroupCallInvite(null)
+    setGroupCallStatusText("")
+    setGroupRingSecondsLeft(Math.floor(GROUP_CALL_RING_TIMEOUT_MS / 1000))
+    handledGroupCallStateRef.current = ""
+    openedGroupCallInviteIdsRef.current.clear()
+  }, [groupId])
+
+  useEffect(() => {
+    latestOutgoingGroupInviteRef.current = outgoingGroupCallInvite
+  }, [outgoingGroupCallInvite])
+
+  useEffect(() => {
+    return () => {
+      if (groupRingTimerRef.current) clearInterval(groupRingTimerRef.current)
+      if (groupStatusTimerRef.current) clearTimeout(groupStatusTimerRef.current)
+      const pendingInvite = latestOutgoingGroupInviteRef.current
+      if (pendingInvite && pendingInvite.status === "ringing" && pendingInvite.callerId === user.uid && groupId) {
+        cancelGroupCallInvite(groupId, pendingInvite.id, user.uid).catch((error) =>
+          console.error("Failed to cancel group call invite on unmount:", error),
+        )
+      }
+    }
+  }, [groupId, user.uid])
+
+  useEffect(() => {
+    if (!groupId || !user.uid) return
+
+    const unsubscribe = listenToLatestGroupCallInvite(groupId, (invite) => {
+      if (!invite || invite.type !== "group") {
+        setActiveGroupCallInvite(null)
+        setIncomingGroupCallInvite(null)
+        setOutgoingGroupCallInvite(null)
+        return
+      }
+
+      setActiveGroupCallInvite(invite)
+
+      const acceptedBy = Array.isArray(invite.acceptedBy) ? invite.acceptedBy : []
+      const declinedBy = Array.isArray(invite.declinedBy) ? invite.declinedBy : []
+      const acceptedByMe = acceptedBy.includes(user.uid)
+      const declinedByMe = declinedBy.includes(user.uid)
+      const stateKey = `${invite.id}:${invite.status}:${acceptedByMe ? "a" : "na"}:${declinedByMe ? "d" : "nd"}:${invite.updatedAtMs || invite.createdAtMs || 0}`
+      const isNewState = handledGroupCallStateRef.current !== stateKey
+      if (isNewState) handledGroupCallStateRef.current = stateKey
+
+      if (invite.status === "ringing") {
+        const secondsLeft = Math.max(
+          0,
+          Math.ceil((GROUP_CALL_RING_TIMEOUT_MS - (Date.now() - (invite.createdAtMs || Date.now()))) / 1000),
+        )
+        setGroupRingSecondsLeft(secondsLeft)
+
+        if (invite.callerId === user.uid) {
+          setOutgoingGroupCallInvite(invite)
+          setIncomingGroupCallInvite(null)
+          if (isNewState) showGroupCallStatus(`Calling ${group?.name || "group"}...`)
+        } else if (!declinedByMe) {
+          setIncomingGroupCallInvite(invite)
+          setOutgoingGroupCallInvite(null)
+          if (isNewState) {
+            showGroupCallStatus(`${invite.callerName || "Someone"} started a group video call`)
+            const notificationKey = `${invite.id}:ringing`
+            const canNotify =
+              typeof window !== "undefined" &&
+              document.hidden &&
+              "Notification" in window &&
+              Notification.permission === "granted"
+            if (canNotify && incomingGroupNotifiedRef.current !== notificationKey) {
+              incomingGroupNotifiedRef.current = notificationKey
+              new Notification("Incoming group video call", {
+                body: `${invite.callerName || "Someone"} is calling in ${group?.name || "your group"}.`,
+              })
+            }
+          }
+        } else {
+          setIncomingGroupCallInvite(null)
+          setOutgoingGroupCallInvite(null)
+        }
+        return
+      }
+
+      setIncomingGroupCallInvite(null)
+      setOutgoingGroupCallInvite(null)
+
+      if (invite.status === "active") {
+        if (!isNewState) return
+
+        if (acceptedByMe || invite.callerId === user.uid) {
+          const callLink = getGroupCallLinkFromInvite(invite)
+          const opened = openGroupCallLinkInNewTab({ inviteId: invite.id, callLink })
+          if (opened) {
+            showGroupCallStatus("Group call connected. Opening in new tab...")
+          } else {
+            showGroupCallStatus("Group call is live. Tap Video Call to join.")
+          }
+        } else {
+          showGroupCallStatus("Group call is live. Tap Video Call to join.")
+        }
+        return
+      }
+
+      if (!isNewState) return
+      if (invite.status === "canceled") showGroupCallStatus("Group call canceled")
+      if (invite.status === "ended" && invite.endReason === "timeout") showGroupCallStatus("No one joined group call")
+      if (invite.status === "ended" && invite.endReason !== "timeout") showGroupCallStatus("Group call ended")
+    })
+
+    return () => unsubscribe()
+  }, [groupId, user.uid, group?.name, GROUP_CALL_RING_TIMEOUT_MS])
+
+  useEffect(() => {
+    if (groupRingTimerRef.current) clearInterval(groupRingTimerRef.current)
+    const invite = incomingGroupCallInvite || outgoingGroupCallInvite
+    if (!invite || invite.status !== "ringing") return
+
+    const tick = () => {
+      const seconds = Math.max(
+        0,
+        Math.ceil((GROUP_CALL_RING_TIMEOUT_MS - (Date.now() - (invite.createdAtMs || Date.now()))) / 1000),
+      )
+      setGroupRingSecondsLeft(seconds)
+    }
+
+    tick()
+    groupRingTimerRef.current = setInterval(tick, 1000)
+    return () => {
+      if (groupRingTimerRef.current) clearInterval(groupRingTimerRef.current)
+    }
+  }, [incomingGroupCallInvite, outgoingGroupCallInvite, GROUP_CALL_RING_TIMEOUT_MS])
+
+  useEffect(() => {
+    if (!outgoingGroupCallInvite || outgoingGroupCallInvite.status !== "ringing") return
+    if (outgoingGroupCallInvite.callerId !== user.uid) return
+
+    const remainingMs = Math.max(
+      0,
+      GROUP_CALL_RING_TIMEOUT_MS - (Date.now() - (outgoingGroupCallInvite.createdAtMs || Date.now())),
+    )
+
+    const timeoutId = setTimeout(() => {
+      timeoutGroupCallInvite(groupId, outgoingGroupCallInvite.id).catch((error) =>
+        console.error("Failed to timeout group call invite:", error),
+      )
+    }, remainingMs)
+
+    return () => clearTimeout(timeoutId)
+  }, [outgoingGroupCallInvite, groupId, user.uid, GROUP_CALL_RING_TIMEOUT_MS])
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
@@ -210,6 +435,7 @@ export default function GroupChat({ user, groupId, onBack }) {
     if (!confirmed) return
 
     try {
+      await cleanupGroupCallBeforeExit()
       await leaveGroup(groupId, user.uid)
       alert("You have left the group")
       onBack()
@@ -217,6 +443,116 @@ export default function GroupChat({ user, groupId, onBack }) {
       console.error("Error leaving group:", error)
       alert("Failed to leave group")
     }
+  }
+
+  const cleanupGroupCallBeforeExit = async () => {
+    try {
+      if (outgoingGroupCallInvite?.status === "ringing" && outgoingGroupCallInvite?.callerId === user.uid) {
+        await cancelGroupCallInvite(groupId, outgoingGroupCallInvite.id, user.uid)
+        return
+      }
+      if (activeGroupCallInvite?.status === "active" && activeGroupCallInvite?.callerId === user.uid) {
+        await cancelGroupCallInvite(groupId, activeGroupCallInvite.id, user.uid)
+      }
+    } catch (error) {
+      console.error("Failed to clean up group call invite:", error)
+    }
+  }
+
+  const handleOpenVideoCall = async () => {
+    if (!groupId) return
+
+    if (activeGroupCallInvite?.status === "active") {
+      const callLink = getGroupCallLinkFromInvite(activeGroupCallInvite)
+      const opened = openGroupCallLinkInNewTab({ inviteId: activeGroupCallInvite.id, callLink, force: true })
+      if (!opened) {
+        showGroupCallStatus("Unable to open call tab. Please allow popups.")
+      }
+      return
+    }
+
+    if (incomingGroupCallInvite || outgoingGroupCallInvite) return
+
+    const callerName = user.nickname || user.username || user.displayName || "CRABY User"
+    const roomName = getGroupCallRoomName()
+    const callLink = getGroupCallLink(roomName)
+
+    try {
+      const callId = await createGroupCallInvite({
+        groupId,
+        callerId: user.uid,
+        callerName,
+        roomName,
+        callLink,
+      })
+
+      setOutgoingGroupCallInvite({
+        id: callId,
+        callId,
+        groupId,
+        callerId: user.uid,
+        callerName,
+        roomName,
+        callLink,
+        status: "ringing",
+        type: "group",
+        acceptedBy: [user.uid],
+        declinedBy: [],
+        createdAtMs: Date.now(),
+      })
+      setIncomingGroupCallInvite(null)
+      setGroupRingSecondsLeft(Math.floor(GROUP_CALL_RING_TIMEOUT_MS / 1000))
+    } catch (error) {
+      console.error("Error creating group call invite:", error)
+      alert("Failed to start group video call. Please try again.")
+    }
+  }
+
+  const handleAcceptGroupCall = async () => {
+    if (!incomingGroupCallInvite) return
+    try {
+      const accepted = await acceptGroupCallInvite(groupId, incomingGroupCallInvite.id, user.uid)
+      if (!accepted) {
+        showGroupCallStatus("Group call is no longer available.")
+        return
+      }
+      const callLink = getGroupCallLinkFromInvite(incomingGroupCallInvite)
+      const opened = openGroupCallLinkInNewTab({ inviteId: incomingGroupCallInvite.id, callLink, force: true })
+      if (!opened) {
+        showGroupCallStatus("Group call accepted. Tap Video Call to open.")
+      }
+    } catch (error) {
+      console.error("Failed to accept group call invite:", error)
+      alert("Failed to join group call.")
+    }
+  }
+
+  const handleDeclineGroupCall = async () => {
+    if (!incomingGroupCallInvite) return
+    try {
+      await declineGroupCallInvite(groupId, incomingGroupCallInvite.id, user.uid)
+    } catch (error) {
+      console.error("Failed to decline group call invite:", error)
+    }
+  }
+
+  const handleCancelGroupCall = async () => {
+    if (!outgoingGroupCallInvite || outgoingGroupCallInvite.callerId !== user.uid) return
+    try {
+      await cancelGroupCallInvite(groupId, outgoingGroupCallInvite.id, user.uid)
+    } catch (error) {
+      console.error("Failed to cancel group call invite:", error)
+    }
+  }
+
+  const handleDismissGroupCallStatus = () => {
+    if (groupStatusTimerRef.current) clearTimeout(groupStatusTimerRef.current)
+    setGroupCallStatusText("")
+  }
+
+  const handleBackToGroups = async () => {
+    await cleanupGroupCallBeforeExit()
+    onBack()
   }
 
   const handleApproveRequest = async (requestUserId) => {
@@ -276,6 +612,8 @@ export default function GroupChat({ user, groupId, onBack }) {
 
   const isAdmin = group?.admins?.includes(user.uid)
   const isCreator = group?.createdBy === user.uid
+  const inActiveGroupCall = activeGroupCallInvite?.status === "active"
+  const groupCallInviteBusy = !!incomingGroupCallInvite || !!outgoingGroupCallInvite
 
   const isMessageMentioningMe = (message) => {
     return message.mentions?.includes(user.uid)
@@ -349,6 +687,29 @@ export default function GroupChat({ user, groupId, onBack }) {
 
   return (
     <div className="group-chat-container">
+      {incomingGroupCallInvite && (
+        <CallInviteModal
+          mode="incoming"
+          partnerName={incomingGroupCallInvite.callerName || "Group member"}
+          countdownSeconds={groupRingSecondsLeft}
+          onAccept={handleAcceptGroupCall}
+          onDecline={handleDeclineGroupCall}
+        />
+      )}
+
+      {outgoingGroupCallInvite && (
+        <CallInviteModal
+          mode="outgoing"
+          partnerName={group?.name || "group"}
+          countdownSeconds={groupRingSecondsLeft}
+          onCancel={handleCancelGroupCall}
+        />
+      )}
+
+      {!incomingGroupCallInvite && !outgoingGroupCallInvite && !!groupCallStatusText && (
+        <CallInviteModal mode="status" statusText={groupCallStatusText} onClose={handleDismissGroupCallStatus} />
+      )}
+
       {showSettings && (
         <GroupSettingsModal
           group={group}
@@ -403,6 +764,9 @@ export default function GroupChat({ user, groupId, onBack }) {
             <button onClick={() => setShowMembersModal(true)} className="group-chat-members-btn">
               👤 Members
             </button>
+            <button onClick={handleOpenVideoCall} disabled={groupCallInviteBusy} className="group-chat-video-btn">
+              {outgoingGroupCallInvite ? "Calling..." : inActiveGroupCall ? "Join Call" : "Video Call"}
+            </button>
             {isAdmin && group.joinRequests?.length > 0 && (
               <button onClick={() => setShowJoinRequests(!showJoinRequests)} className="group-chat-requests-btn">
                 📋 Requests ({group.joinRequests.length})
@@ -411,7 +775,7 @@ export default function GroupChat({ user, groupId, onBack }) {
             <button onClick={handleLeaveGroup} className="group-chat-leave-btn">
               🚪 Leave
             </button>
-            <button onClick={onBack} className="group-chat-back-btn">
+            <button onClick={handleBackToGroups} className="group-chat-back-btn">
               ← Back
             </button>
           </div>
@@ -427,6 +791,16 @@ export default function GroupChat({ user, groupId, onBack }) {
             <button onClick={() => setShowMembersModal(true)} className="group-chat-mobile-menu-item">
               Members
             </button>
+            <button
+              onClick={() => {
+                handleOpenVideoCall()
+                setShowMobileMenu(false)
+              }}
+              disabled={groupCallInviteBusy}
+              className="group-chat-mobile-menu-item"
+            >
+              {outgoingGroupCallInvite ? "Calling..." : inActiveGroupCall ? "Join Call" : "Video Call"}
+            </button>
             {isAdmin && group.joinRequests?.length > 0 && (
               <button onClick={() => setShowJoinRequests(!showJoinRequests)} className="group-chat-mobile-menu-item">
                 Requests ({group.joinRequests.length})
@@ -440,7 +814,7 @@ export default function GroupChat({ user, groupId, onBack }) {
             <button onClick={handleLeaveGroup} className="group-chat-mobile-menu-item">
               Leave Group
             </button>
-            <button onClick={onBack} className="group-chat-mobile-menu-item">
+            <button onClick={handleBackToGroups} className="group-chat-mobile-menu-item">
               Back to Groups
             </button>
           </div>
