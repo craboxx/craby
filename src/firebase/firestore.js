@@ -2034,6 +2034,20 @@ export const listenToPingPongGame = (chatRoomId, callback) => {
   })
 }
 
+const pingPongPaddleHalfWidth01 = 104 / 520 / 2
+const pingPongMinPaddleCenter01 = pingPongPaddleHalfWidth01
+const pingPongMaxPaddleCenter01 = 1 - pingPongPaddleHalfWidth01
+
+const createPingPongServeBall = (direction = 1) => {
+  const horizontalDirection = Math.random() >= 0.5 ? 1 : -1
+  return {
+    x: 0.5,
+    y: 0.5,
+    vx: 0.0048 * horizontalDirection,
+    vy: 0.0076 * direction,
+  }
+}
+
 export const sendPingPongRequest = async (chatRoomId, requesterId, responderId) => {
   const gameRef = doc(db, "chatRooms", chatRoomId, "games", "pingPong")
   await setDoc(
@@ -2045,7 +2059,7 @@ export const sendPingPongRequest = async (chatRoomId, requesterId, responderId) 
       createdAt: serverTimestamp(),
       scores: {},
       hostUid: requesterId,
-      ball: { x: 0.5, y: 0.5, vx: 0.006, vy: 0.004 },
+      ball: createPingPongServeBall(-1),
       paddles: {},
       lastUpdateAt: serverTimestamp(),
       winnerUid: null,
@@ -2083,7 +2097,7 @@ export const updatePingPongPaddle = async (chatRoomId, uid, y01) => {
   const gameRef = doc(db, "chatRooms", chatRoomId, "games", "pingPong")
   const rawValue = Number(y01)
   const normalized = Number.isFinite(rawValue) ? rawValue : 0.5
-  const clamped = Math.max(0.08, Math.min(0.92, normalized))
+  const clamped = Math.max(pingPongMinPaddleCenter01, Math.min(pingPongMaxPaddleCenter01, normalized))
   await updateDoc(gameRef, {
     [`paddles.${uid}`]: clamped,
     lastUpdateAt: serverTimestamp(),
@@ -2105,7 +2119,7 @@ export const startPingPongRematch = async (chatRoomId) => {
   const data = snap.data()
   await updateDoc(gameRef, {
     status: "active",
-    ball: { x: 0.5, y: 0.5, vx: 0.006, vy: 0.004 },
+    ball: createPingPongServeBall(Math.random() >= 0.5 ? 1 : -1),
     paddles: {
       [data.requesterId]: 0.5,
       [data.responderId]: 0.5,

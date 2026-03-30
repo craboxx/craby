@@ -914,6 +914,22 @@ export default function ChatRoom({ user, userProfile, chatRoomId, onChatEnded, o
 
   const partnerRpsScore = opponentId ? scores[opponentId] || 0 : 0
   const rpsHasEnded = rpsGame?.status === "ended"
+  const rpsLastRound = rpsGame?.lastRound || null
+  const rpsRoundLabel = rpsLastRound?.round || Math.min(3, rpsGame?.round || 1)
+  const rpsShowRoundState = !!(rpsLastRound && (rpsReveal || rpsHasEnded))
+  const rpsToEmoji = (choice) => (choice === "rock" ? "🪨" : choice === "paper" ? "📄" : choice === "scissors" ? "✂️" : "")
+  const rpsLastRoundWasMineA = rpsLastRound?.aUid === user.uid
+  const rpsYourEmoji = rpsShowRoundState
+    ? rpsToEmoji(rpsLastRoundWasMineA ? rpsLastRound?.aChoice : rpsLastRound?.bChoice)
+    : ""
+  const rpsOpponentEmoji = rpsShowRoundState
+    ? rpsToEmoji(rpsLastRoundWasMineA ? rpsLastRound?.bChoice : rpsLastRound?.aChoice)
+    : ""
+  const rpsYouWonRound = rpsShowRoundState
+    ? rpsLastRound?.winnerUid
+      ? rpsLastRound.winnerUid === user.uid
+      : null
+    : null
 
   const myBoard = bingoGame?.boards?.[user.uid] || null
   const myMarks = bingoGame?.marks?.[user.uid] || Array(25).fill(false)
@@ -1841,7 +1857,7 @@ export default function ChatRoom({ user, userProfile, chatRoomId, onChatEnded, o
                     <div style={{ ...scoreValue, color: "#F9FAFB" }}>{myRpsScore}</div>
                   </div>
                   <div style={{ textAlign: "center", minWidth: 120 }}>
-                    <div style={{ fontWeight: 800 }}>Round {Math.min(3, rpsGame.round || 1)}</div>
+                    <div style={{ fontWeight: 800 }}>Round {rpsRoundLabel}</div>
                   </div>
                   <div style={scoreCol}>
                     <div style={scoreName}>{partnerName}</div>
@@ -1850,49 +1866,34 @@ export default function ChatRoom({ user, userProfile, chatRoomId, onChatEnded, o
                 </div>
 
                 {/* Reveal area */}
-                {(() => {
-                  const last = rpsGame.lastRound
-                  // determine emojis for reveal
-                  const toEmoji = (c) => (c === "rock" ? "🪨" : c === "paper" ? "📄" : c === "scissors" ? "✂️" : "")
-                  let youEmoji = ""
-                  let oppEmoji = ""
-                  let youWon = null
-                  if (rpsReveal && last) {
-                    const aIsMe = last.aUid === user.uid
-                    youEmoji = toEmoji(aIsMe ? last.aChoice : last.bChoice)
-                    oppEmoji = toEmoji(aIsMe ? last.bChoice : last.aChoice)
-                    youWon = last.winnerUid ? last.winnerUid === user.uid : null
-                  }
-                  return (
-                    <>
-                      <div
-                        className="fade-in"
-                        style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 10 }}
-                      >
-                        <div className={`rps-box ${youWon === true ? "pop-win" : ""}`} aria-label="Your choice box">
-                          {rpsReveal ? youEmoji : ""}
-                        </div>
-                        <div
-                          className={`rps-box ${youWon === false ? "pop-win" : ""}`}
-                          aria-label="Opponent choice box"
-                        >
-                          {rpsReveal ? oppEmoji : ""}
-                        </div>
-                      </div>
-                      <div
-                        className={`result-text ${youWon === true ? "result-win" : youWon === false ? "result-lose" : "result-draw"}`}
-                      >
-                        {rpsReveal
-                          ? youWon === true
-                            ? "You Win 🎉"
-                            : youWon === false
-                              ? "You Lose 😔"
-                              : "Draw 🤝"
-                          : "\u00A0"}
-                      </div>
-                    </>
-                  )
-                })()}
+                <div className="fade-in" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 10 }}>
+                  <div className={`rps-box ${rpsYouWonRound === true ? "pop-win" : ""}`} aria-label="Your choice box">
+                    {rpsYourEmoji}
+                  </div>
+                  <div
+                    className={`rps-box ${rpsYouWonRound === false ? "pop-win" : ""}`}
+                    aria-label="Opponent choice box"
+                  >
+                    {rpsOpponentEmoji}
+                  </div>
+                </div>
+                <div
+                  className={`result-text ${rpsYouWonRound === true ? "result-win" : rpsYouWonRound === false ? "result-lose" : "result-draw"}`}
+                >
+                  {rpsShowRoundState
+                    ? rpsHasEnded
+                      ? rpsYouWonRound === true
+                        ? "Final round: You won 🎉"
+                        : rpsYouWonRound === false
+                          ? "Final round: You lost 😔"
+                          : "Final round: Draw 🤝"
+                      : rpsYouWonRound === true
+                        ? "You Win 🎉"
+                        : rpsYouWonRound === false
+                          ? "You Lose 😔"
+                          : "Draw 🤝"
+                    : "\u00A0"}
+                </div>
 
                 {/* Options */}
                 {rpsGame.status === "active" && (
@@ -2767,17 +2768,50 @@ const bingoCell = {
   fontWeight: 800,
 }
 
+const PING_CANVAS_WIDTH = 520
+const PING_CANVAS_HEIGHT = 320
+const PING_PADDLE_WIDTH = 104
+const PING_PADDLE_HEIGHT = 12
+const PING_PADDLE_HALF_X01 = PING_PADDLE_WIDTH / PING_CANVAS_WIDTH / 2
+const PING_BALL_RADIUS = 8
+const PING_BALL_RADIUS_X01 = PING_BALL_RADIUS / PING_CANVAS_WIDTH
+const PING_BALL_RADIUS_Y01 = PING_BALL_RADIUS / PING_CANVAS_HEIGHT
+const PING_TOP_Y = 26
+const PING_BOTTOM_Y = PING_CANVAS_HEIGHT - PING_TOP_Y - PING_PADDLE_HEIGHT
+const PING_TOP_CENTER_Y01 = (PING_TOP_Y + PING_PADDLE_HEIGHT / 2) / PING_CANVAS_HEIGHT
+const PING_BOTTOM_CENTER_Y01 = (PING_BOTTOM_Y + PING_PADDLE_HEIGHT / 2) / PING_CANVAS_HEIGHT
+const PING_SERVE_SPEED_X = 0.0048
+const PING_SERVE_SPEED_Y = 0.0076
+const PING_MIN_BALL_SPEED = 0.009
+const PING_MAX_BALL_SPEED = 0.019
+const PING_BOUNCE_ACCEL = 1.08
+const PING_SYNC_INTERVAL_MS = 45
+const PING_WINNING_SCORE = 5
+
+const clampPingPaddleCenter = (value) => Math.max(PING_PADDLE_HALF_X01, Math.min(1 - PING_PADDLE_HALF_X01, value))
+
+const createPingServeBall = (direction = 1) => {
+  const horizontalDirection = Math.random() >= 0.5 ? 1 : -1
+  return {
+    x: 0.5,
+    y: 0.5,
+    vx: PING_SERVE_SPEED_X * horizontalDirection,
+    vy: PING_SERVE_SPEED_Y * direction,
+  }
+}
+
 function PingPongCanvas({ user, partnerId, game, isHost, onPaddle, onHostUpdate, onRematch }) {
   const canvasRef = useRef(null)
   const lastHostSendRef = useRef(0)
+  const lastFrameRef = useRef(0)
   const lastPaddleSendRef = useRef({ at: 0, value: null })
-  const ballRef = useRef(game?.ball || { x: 0.5, y: 0.5, vx: 0.006, vy: 0.004 })
+  const ballRef = useRef(game?.ball || createPingServeBall(-1))
   const paddlesRef = useRef(game?.paddles || {})
   const scoresRef = useRef(game?.scores || {})
   const clamp01 = (value) => Math.max(0, Math.min(1, value))
 
   useEffect(() => {
-    ballRef.current = game?.ball || { x: 0.5, y: 0.5, vx: 0.006, vy: 0.004 }
+    ballRef.current = game?.ball || createPingServeBall(-1)
     paddlesRef.current = game?.paddles || {}
     scoresRef.current = game?.scores || {}
   }, [game?.ball, game?.paddles, game?.scores])
@@ -2788,80 +2822,138 @@ function PingPongCanvas({ user, partnerId, game, isHost, onPaddle, onHostUpdate,
     const ctx = canvas.getContext("2d")
     const w = canvas.width
     const h = canvas.height
+    let raf = 0
+
+    const drawRoundedRect = (x, y, width, height, radius) => {
+      ctx.beginPath()
+      ctx.moveTo(x + radius, y)
+      ctx.lineTo(x + width - radius, y)
+      ctx.quadraticCurveTo(x + width, y, x + width, y + radius)
+      ctx.lineTo(x + width, y + height - radius)
+      ctx.quadraticCurveTo(x + width, y + height, x + width - radius, y + height)
+      ctx.lineTo(x + radius, y + height)
+      ctx.quadraticCurveTo(x, y + height, x, y + height - radius)
+      ctx.lineTo(x, y + radius)
+      ctx.quadraticCurveTo(x, y, x + radius, y)
+      ctx.closePath()
+    }
 
     const draw = () => {
       ctx.clearRect(0, 0, w, h)
-      // table
-      ctx.fillStyle = "#0b1222"
+      const background = ctx.createLinearGradient(0, 0, 0, h)
+      background.addColorStop(0, "#07111f")
+      background.addColorStop(1, "#0f1f35")
+      ctx.fillStyle = background
       ctx.fillRect(0, 0, w, h)
-      // center line
-      ctx.strokeStyle = "#334155"
-      ctx.setLineDash([6, 6])
+
+      ctx.fillStyle = "rgba(255,255,255,0.04)"
+      for (let stripe = 0; stripe < 18; stripe += 1) {
+        ctx.fillRect(stripe * 30, 0, 18, h)
+      }
+
+      ctx.strokeStyle = "rgba(148, 163, 184, 0.26)"
+      ctx.lineWidth = 2
+      drawRoundedRect(10, 10, w - 20, h - 20, 18)
+      ctx.stroke()
+
+      ctx.strokeStyle = "rgba(148, 163, 184, 0.45)"
+      ctx.lineWidth = 2
+      ctx.setLineDash([10, 10])
       ctx.beginPath()
       ctx.moveTo(0, h / 2)
       ctx.lineTo(w, h / 2)
       ctx.stroke()
       ctx.setLineDash([])
 
-      const paddles = game.paddles || {}
-      const requesterX = clamp01(paddles[game.requesterId] ?? 0.5)
-      const responderX = clamp01(paddles[game.responderId] ?? 0.5)
+      const paddles = paddlesRef.current || {}
+      const requesterX = clampPingPaddleCenter(paddles[game.requesterId] ?? 0.5)
+      const responderX = clampPingPaddleCenter(paddles[game.responderId] ?? 0.5)
       const iAmRequester = game.requesterId === user.uid
       const myX = iAmRequester ? requesterX : responderX
       const oppX = iAmRequester ? responderX : requesterX
 
-      // paddles
-      const padW = 92
-      const padH = 10
-      const topY = 18
-      const bottomY = h - topY - padH
-
       const centerToLeft = (center) => {
-        const raw = center * w - padW / 2
-        return Math.max(0, Math.min(w - padW, raw))
+        const raw = center * w - PING_PADDLE_WIDTH / 2
+        return Math.max(0, Math.min(w - PING_PADDLE_WIDTH, raw))
       }
 
-      // bottom - me
-      ctx.fillStyle = "#10B981"
-      ctx.fillRect(centerToLeft(myX), bottomY, padW, padH)
-      // top - opponent
-      ctx.fillStyle = "#3B82F6"
-      ctx.fillRect(centerToLeft(oppX), topY, padW, padH)
+      const drawPaddle = (centerX, y, mainColor, glowColor, label) => {
+        const left = centerToLeft(centerX)
+        ctx.save()
+        ctx.shadowColor = glowColor
+        ctx.shadowBlur = 16
+        const paddleGradient = ctx.createLinearGradient(0, y, 0, y + PING_PADDLE_HEIGHT)
+        paddleGradient.addColorStop(0, mainColor)
+        paddleGradient.addColorStop(1, glowColor)
+        ctx.fillStyle = paddleGradient
+        drawRoundedRect(left, y, PING_PADDLE_WIDTH, PING_PADDLE_HEIGHT, 6)
+        ctx.fill()
+        ctx.restore()
 
-      // ball
-      const worldBall = game.ball || { x: 0.5, y: 0.5 }
+        ctx.fillStyle = "rgba(248, 250, 252, 0.82)"
+        ctx.font = "600 12px system-ui"
+        ctx.textAlign = "center"
+        ctx.fillText(label, centerX * w, y === PING_TOP_Y ? y - 8 : y + PING_PADDLE_HEIGHT + 16)
+      }
+
+      drawPaddle(oppX, PING_TOP_Y, "#38BDF8", "rgba(56, 189, 248, 0.65)", "Opponent")
+      drawPaddle(myX, PING_BOTTOM_Y, "#34D399", "rgba(52, 211, 153, 0.65)", "You")
+
+      const worldBall = ballRef.current || createPingServeBall(-1)
       const displayY = iAmRequester ? worldBall.y : 1 - worldBall.y
-      ctx.fillStyle = "#fbbf24"
+      ctx.save()
+      ctx.shadowColor = "rgba(250, 204, 21, 0.95)"
+      ctx.shadowBlur = 22
+      const ballGradient = ctx.createRadialGradient(
+        worldBall.x * w - 2,
+        displayY * h - 2,
+        1,
+        worldBall.x * w,
+        displayY * h,
+        PING_BALL_RADIUS,
+      )
+      ballGradient.addColorStop(0, "#FEF3C7")
+      ballGradient.addColorStop(1, "#F59E0B")
+      ctx.fillStyle = ballGradient
       ctx.beginPath()
-      ctx.arc(worldBall.x * w, displayY * h, 6, 0, Math.PI * 2)
+      ctx.arc(worldBall.x * w, displayY * h, PING_BALL_RADIUS, 0, Math.PI * 2)
       ctx.fill()
+
+      ctx.fillStyle = "rgba(255,255,255,0.18)"
+      ctx.beginPath()
+      ctx.arc(worldBall.x * w - 2, displayY * h - 2, 3, 0, Math.PI * 2)
+      ctx.fill()
+      ctx.restore()
     }
 
-    draw()
-  }, [game, user.uid, partnerId])
+    const loop = () => {
+      draw()
+      raf = requestAnimationFrame(loop)
+    }
+
+    loop()
+    return () => cancelAnimationFrame(raf)
+  }, [game?.requesterId, game?.responderId, user.uid])
 
   useEffect(() => {
     if (!isHost || game.status !== "active" || !game.requesterId || !game.responderId) return
 
     const requesterId = game.requesterId
     const responderId = game.responderId
-    const paddleHalfWidth = 0.13
-    const topLine = 0.06
-    const bottomLine = 0.94
-    const minSpeedY = 0.0055
-    const maxSpeedY = 0.02
-    const maxSpeedX = 0.018
-    const winningScore = 5
 
-    const bounceOffPaddle = (ballX, paddleCenter, direction) => {
-      const offset = (ballX - paddleCenter) / paddleHalfWidth
-      const nextVxRaw = ballRef.current.vx + offset * 0.004
-      const nextVx = Math.max(-maxSpeedX, Math.min(maxSpeedX, nextVxRaw))
-      const baseVy = Math.max(minSpeedY, Math.min(maxSpeedY, Math.abs(ballRef.current.vy)))
-      const boostedVy = Math.min(maxSpeedY, baseVy * (1 + Math.min(0.16, Math.abs(offset) * 0.12)))
+    const bounceOffPaddle = (ballX, paddleCenter, direction, currentVx, currentVy) => {
+      const offset = Math.max(-1, Math.min(1, (ballX - paddleCenter) / PING_PADDLE_HALF_X01))
+      const currentSpeed = Math.max(PING_MIN_BALL_SPEED, Math.hypot(currentVx, currentVy))
+      const boostedSpeed = Math.min(PING_MAX_BALL_SPEED, currentSpeed * PING_BOUNCE_ACCEL)
+      const nextXRatio = Math.max(
+        -0.84,
+        Math.min(0.84, (currentVx / currentSpeed) * 0.35 + offset * 0.6),
+      )
+      const nextVx = boostedSpeed * nextXRatio
+      const nextVy = Math.sqrt(Math.max(0.00005, boostedSpeed * boostedSpeed - nextVx * nextVx)) * direction
       return {
         vx: nextVx,
-        vy: direction * boostedVy,
+        vy: nextVy,
       }
     }
 
@@ -2870,16 +2962,11 @@ function PingPongCanvas({ user, partnerId, game, isHost, onPaddle, onHostUpdate,
       nextScores[scorerUid] = (nextScores[scorerUid] || 0) + 1
       scoresRef.current = nextScores
 
-      const serveVy = scorerUid === requesterId ? -0.006 : 0.006
-      const nextBall = {
-        x: 0.5,
-        y: 0.5,
-        vx: Math.random() > 0.5 ? 0.006 : -0.006,
-        vy: serveVy,
-      }
+      const nextBall = createPingServeBall(scorerUid === requesterId ? -1 : 1)
       ballRef.current = nextBall
+      lastFrameRef.current = 0
 
-      const winnerUid = nextScores[scorerUid] >= winningScore ? scorerUid : null
+      const winnerUid = nextScores[scorerUid] >= PING_WINNING_SCORE ? scorerUid : null
       onHostUpdate({
         ball: nextBall,
         scores: nextScores,
@@ -2889,57 +2976,55 @@ function PingPongCanvas({ user, partnerId, game, isHost, onPaddle, onHostUpdate,
     }
 
     let raf = 0
-    const step = () => {
+    const step = (now) => {
       raf = requestAnimationFrame(step)
 
-      // Host simulates game state and syncs to Firestore at ~20fps.
-      const now = performance.now()
-      if (now - lastHostSendRef.current < 50) return
-      lastHostSendRef.current = now
+      if (!lastFrameRef.current) {
+        lastFrameRef.current = now
+        return
+      }
+
+      const deltaFrames = Math.max(0.8, Math.min(2.4, (now - lastFrameRef.current) / 16.6667))
+      lastFrameRef.current = now
 
       const paddles = paddlesRef.current || {}
-      const requesterX = clamp01(paddles[requesterId] ?? 0.5)
-      const responderX = clamp01(paddles[responderId] ?? 0.5)
-      let { x, y, vx, vy } = ballRef.current || { x: 0.5, y: 0.5, vx: 0.006, vy: 0.004 }
+      const requesterX = clampPingPaddleCenter(paddles[requesterId] ?? 0.5)
+      const responderX = clampPingPaddleCenter(paddles[responderId] ?? 0.5)
+      let { x, y, vx, vy } = ballRef.current || createPingServeBall(-1)
 
-      x += vx
-      y += vy
+      x += vx * deltaFrames
+      y += vy * deltaFrames
 
-      // walls
-      if (x <= 0.02) {
-        x = 0.02
+      if (x <= PING_BALL_RADIUS_X01) {
+        x = PING_BALL_RADIUS_X01
         vx = Math.abs(vx)
       }
-      if (x >= 0.98) {
-        x = 0.98
+      if (x >= 1 - PING_BALL_RADIUS_X01) {
+        x = 1 - PING_BALL_RADIUS_X01
         vx = -Math.abs(vx)
       }
 
-      // Bottom edge (requester paddle)
-      if (vy > 0 && y >= bottomLine) {
-        const withinPaddle = Math.abs(x - requesterX) <= paddleHalfWidth
+      if (vy > 0 && y + PING_BALL_RADIUS_Y01 >= PING_BOTTOM_CENTER_Y01 - PING_PADDLE_HEIGHT / PING_CANVAS_HEIGHT / 2) {
+        const withinPaddle = Math.abs(x - requesterX) <= PING_PADDLE_HALF_X01 + PING_BALL_RADIUS_X01 * 0.75
         if (withinPaddle) {
-          y = bottomLine
-          ballRef.current = { x, y, vx, vy }
-          const bounced = bounceOffPaddle(x, requesterX, -1)
+          y = PING_BOTTOM_CENTER_Y01 - PING_PADDLE_HEIGHT / PING_CANVAS_HEIGHT / 2 - PING_BALL_RADIUS_Y01
+          const bounced = bounceOffPaddle(x, requesterX, -1, vx, vy)
           vx = bounced.vx
           vy = bounced.vy
-        } else {
+        } else if (y >= 1 - PING_BALL_RADIUS_Y01) {
           scorePoint(responderId)
           return
         }
       }
 
-      // Top edge (responder paddle)
-      if (vy < 0 && y <= topLine) {
-        const withinPaddle = Math.abs(x - responderX) <= paddleHalfWidth
+      if (vy < 0 && y - PING_BALL_RADIUS_Y01 <= PING_TOP_CENTER_Y01 + PING_PADDLE_HEIGHT / PING_CANVAS_HEIGHT / 2) {
+        const withinPaddle = Math.abs(x - responderX) <= PING_PADDLE_HALF_X01 + PING_BALL_RADIUS_X01 * 0.75
         if (withinPaddle) {
-          y = topLine
-          ballRef.current = { x, y, vx, vy }
-          const bounced = bounceOffPaddle(x, responderX, 1)
+          y = PING_TOP_CENTER_Y01 + PING_PADDLE_HEIGHT / PING_CANVAS_HEIGHT / 2 + PING_BALL_RADIUS_Y01
+          const bounced = bounceOffPaddle(x, responderX, 1, vx, vy)
           vx = bounced.vx
           vy = bounced.vy
-        } else {
+        } else if (y <= PING_BALL_RADIUS_Y01) {
           scorePoint(requesterId)
           return
         }
@@ -2947,10 +3032,17 @@ function PingPongCanvas({ user, partnerId, game, isHost, onPaddle, onHostUpdate,
 
       const nextBall = { x, y, vx, vy }
       ballRef.current = nextBall
-      onHostUpdate({ ball: nextBall })
+
+      if (now - lastHostSendRef.current >= PING_SYNC_INTERVAL_MS) {
+        lastHostSendRef.current = now
+        onHostUpdate({ ball: nextBall })
+      }
     }
     raf = requestAnimationFrame(step)
-    return () => cancelAnimationFrame(raf)
+    return () => {
+      cancelAnimationFrame(raf)
+      lastFrameRef.current = 0
+    }
   }, [isHost, game?.status, game?.requesterId, game?.responderId, onHostUpdate])
 
   useEffect(() => {
@@ -2960,7 +3052,7 @@ function PingPongCanvas({ user, partnerId, game, isHost, onPaddle, onHostUpdate,
     const maybeSendPaddle = (clientX) => {
       const rect = canvas.getBoundingClientRect()
       const raw = (clientX - rect.left) / rect.width
-      const normalized = clamp01(raw)
+      const normalized = clampPingPaddleCenter(clamp01(raw))
       const now = performance.now()
       const last = lastPaddleSendRef.current
       const delta = last.value === null ? 1 : Math.abs(normalized - last.value)
@@ -2997,16 +3089,22 @@ function PingPongCanvas({ user, partnerId, game, isHost, onPaddle, onHostUpdate,
       </div>
       <canvas
         ref={canvasRef}
-        width={520}
-        height={320}
+        width={PING_CANVAS_WIDTH}
+        height={PING_CANVAS_HEIGHT}
         style={{
           width: "100%",
-          background: "#0b1222",
+          background: "linear-gradient(180deg, #07111f, #0f1f35)",
           borderRadius: 12,
           touchAction: "none",
           cursor: game.status === "active" ? "crosshair" : "default",
+          border: "1px solid rgba(148, 163, 184, 0.2)",
+          boxShadow: "inset 0 1px 0 rgba(255,255,255,0.04), 0 12px 28px rgba(0,0,0,0.28)",
         }}
       />
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, marginTop: 8, fontSize: 12, opacity: 0.78 }}>
+        <span>Drag or tap across the court to move your paddle.</span>
+        <span>{game.status === "active" ? "First to 5 points wins." : "Ready for the next rally."}</span>
+      </div>
       {game.status === "ended" && (
         <div style={{ textAlign: "center", marginTop: 10, fontWeight: 800 }}>
           {game.winnerUid === user.uid ? "🎉 You won!" : "😔 You lost."}
