@@ -2062,7 +2062,7 @@ const createPingPongRally = ({ fromUid, toUid, fromPaddleX = 0.5, x = 0.5, y = 0
   vx,
   vy,
   speed: Math.sqrt(vx * vx + vy * vy),
-  startedAtMs: Date.now() + leadMs,
+  leadMs,
 })
 
 export const sendPingPongRequest = async (chatRoomId, requesterId, responderId) => {

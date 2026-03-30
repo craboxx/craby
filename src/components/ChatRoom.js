@@ -492,6 +492,12 @@ export default function ChatRoom({ user, userProfile, chatRoomId, onChatEnded, o
 
   useEffect(() => {
     if (!rpsGame) return
+    if (rpsGame.status === "active" && (rpsGame.round || 1) === 1 && !rpsGame.lastRound) {
+      lastRevealedRoundRef.current = null
+      setRpsReveal(false)
+      setPickedRound(null)
+      setMyLastPick(null)
+    }
     const currentRound = rpsGame.round || 1
     const revealedRound = rpsGame.lastRound?.round
 
@@ -912,15 +918,19 @@ export default function ChatRoom({ user, userProfile, chatRoomId, onChatEnded, o
         : null
 
   const partnerRpsScore = opponentId ? scores[opponentId] || 0 : 0
+  const rpsCurrentRound = rpsGame?.round || 1
+  const rpsCurrentChoices = rpsGame?.choices?.[rpsCurrentRound] || {}
+  const myServerPick = rpsCurrentChoices?.[user.uid]
+  const myPendingPick = pickedRound === rpsCurrentRound && myLastPick ? myLastPick : myServerPick
   const rpsHasEnded = rpsGame?.status === "ended"
   const rpsLastRound = rpsGame?.lastRound || null
-  const rpsRoundLabel = rpsLastRound?.round || Math.min(3, rpsGame?.round || 1)
+  const rpsRoundLabel = rpsLastRound?.round || Math.min(3, rpsCurrentRound)
   const rpsShowRoundState = !!(rpsLastRound && (rpsReveal || rpsHasEnded))
   const rpsToEmoji = (choice) => (choice === "rock" ? "🪨" : choice === "paper" ? "📄" : choice === "scissors" ? "✂️" : "")
   const rpsLastRoundWasMineA = rpsLastRound?.aUid === user.uid
   const rpsYourEmoji = rpsShowRoundState
     ? rpsToEmoji(rpsLastRoundWasMineA ? rpsLastRound?.aChoice : rpsLastRound?.bChoice)
-    : ""
+    : rpsToEmoji(myPendingPick)
   const rpsOpponentEmoji = rpsShowRoundState
     ? rpsToEmoji(rpsLastRoundWasMineA ? rpsLastRound?.bChoice : rpsLastRound?.aChoice)
     : ""
@@ -1890,7 +1900,9 @@ export default function ChatRoom({ user, userProfile, chatRoomId, onChatEnded, o
                         : rpsYouWonRound === false
                           ? "You Lose 😔"
                           : "Draw 🤝"
-                    : "\u00A0"}
+                    : myPendingPick
+                      ? "Choice locked in. Waiting for opponent..."
+                      : "\u00A0"}
                 </div>
 
                 {/* Options */}
@@ -1906,14 +1918,14 @@ export default function ChatRoom({ user, userProfile, chatRoomId, onChatEnded, o
                         const isDisabled =
                           rpsReveal ||
                           rpsGame.status !== "active" ||
-                          (pickedRound && pickedRound === (rpsGame.round || 1))
-                        const isActive = myLastPick === key && pickedRound === (rpsGame.round || 1)
+                          !!rpsCurrentChoices?.[user.uid]
+                        const isActive = myPendingPick === key
                         return (
                           <button
                             key={key}
                             onClick={async () => {
                               if (isDisabled) return
-                              setPickedRound(rpsGame.round || 1)
+                              setPickedRound(rpsCurrentRound)
                               setMyLastPick(key)
                               try {
                                 await chooseRps(chatRoomId, user.uid, key)
@@ -2809,7 +2821,7 @@ const createPingRallyState = ({ fromUid, toUid, fromPaddleX = 0.5, x = 0.5, y = 
   vx,
   vy,
   speed: Math.sqrt(vx * vx + vy * vy),
-  startedAtMs: Date.now() + leadMs,
+  leadMs,
 })
 
 function PingPongCanvas({ user, partnerId, game, onRallyUpdate, onRematch }) {
@@ -2953,15 +2965,26 @@ function PingPongCanvas({ user, partnerId, game, onRallyUpdate, onRematch }) {
 
   useEffect(() => {
     const rally = game?.rally || null
-    rallyRef.current = rally
+    const localLeadMs = Number.isFinite(rally?.leadMs)
+      ? rally.leadMs
+      : Number.isFinite(rally?.startedAtMs)
+        ? Math.max(0, rally.startedAtMs - Date.now())
+        : PING_RALLY_LEAD_MS
+    const localRally = rally
+      ? {
+          ...rally,
+          startedAtMs: Date.now() + localLeadMs,
+        }
+      : null
+    rallyRef.current = localRally
     handledRallyIdRef.current = null
     updateInFlightRef.current = false
 
-    if (rally?.fromUid && rally.fromUid !== user.uid && typeof rally.fromPaddleX === "number") {
-      opponentPaddleXRef.current = clampPingPaddleCenter(rally.fromPaddleX)
+    if (localRally?.fromUid && localRally.fromUid !== user.uid && typeof localRally.fromPaddleX === "number") {
+      opponentPaddleXRef.current = clampPingPaddleCenter(localRally.fromPaddleX)
     }
 
-    ballDisplayRef.current = rally ? { x: rally.x, y: rally.y, vx: rally.vx, vy: rally.vy } : null
+    ballDisplayRef.current = localRally ? { x: localRally.x, y: localRally.y, vx: localRally.vx, vy: localRally.vy } : null
   }, [game?.rally, user.uid])
 
   useEffect(() => {
