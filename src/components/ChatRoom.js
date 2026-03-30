@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useRef } from "react"
+import { useState, useEffect, useRef, useCallback } from "react"
 import {
   listenToMessages,
   sendMessage,
@@ -41,7 +41,6 @@ import {
   sendPingPongRequest,
   acceptPingPongRequest,
   declinePingPongRequest,
-  updatePingPongPaddle,
   hostUpdatePingPongState,
   startPingPongRematch,
   closePingPongGame,
@@ -991,7 +990,6 @@ export default function ChatRoom({ user, userProfile, chatRoomId, onChatEnded, o
     setShowBingoModal(false)
   }
 
-  const isPingHost = pingGame?.hostUid === user.uid
   const inAcceptedCall = activeCallInvite?.status === "accepted"
   const callInviteBusy = !!incomingCallInvite || !!outgoingCallInvite
 
@@ -2681,9 +2679,7 @@ export default function ChatRoom({ user, userProfile, chatRoomId, onChatEnded, o
                 user={user}
                 partnerId={partnerId}
                 game={pingGame}
-                isHost={isPingHost}
-                onPaddle={(y01) => updatePingPongPaddle(chatRoomId, user.uid, y01)}
-                onHostUpdate={(state) => hostUpdatePingPongState(chatRoomId, state)}
+                onRallyUpdate={(state) => hostUpdatePingPongState(chatRoomId, state)}
                 onRematch={() => startPingPongRematch(chatRoomId)}
               />
             </div>
@@ -2778,14 +2774,17 @@ const PING_BALL_RADIUS_X01 = PING_BALL_RADIUS / PING_CANVAS_WIDTH
 const PING_BALL_RADIUS_Y01 = PING_BALL_RADIUS / PING_CANVAS_HEIGHT
 const PING_TOP_Y = 26
 const PING_BOTTOM_Y = PING_CANVAS_HEIGHT - PING_TOP_Y - PING_PADDLE_HEIGHT
+const PING_PADDLE_HEIGHT01 = PING_PADDLE_HEIGHT / PING_CANVAS_HEIGHT
 const PING_TOP_CENTER_Y01 = (PING_TOP_Y + PING_PADDLE_HEIGHT / 2) / PING_CANVAS_HEIGHT
 const PING_BOTTOM_CENTER_Y01 = (PING_BOTTOM_Y + PING_PADDLE_HEIGHT / 2) / PING_CANVAS_HEIGHT
+const PING_TOP_CONTACT_Y01 = PING_TOP_CENTER_Y01 + PING_PADDLE_HEIGHT01 / 2 + PING_BALL_RADIUS_Y01
+const PING_BOTTOM_CONTACT_Y01 = PING_BOTTOM_CENTER_Y01 - PING_PADDLE_HEIGHT01 / 2 - PING_BALL_RADIUS_Y01
 const PING_SERVE_SPEED_X = 0.0048
 const PING_SERVE_SPEED_Y = 0.0076
 const PING_MIN_BALL_SPEED = 0.009
 const PING_MAX_BALL_SPEED = 0.019
 const PING_BOUNCE_ACCEL = 1.08
-const PING_SYNC_INTERVAL_MS = 45
+const PING_RALLY_LEAD_MS = 140
 const PING_WINNING_SCORE = 5
 
 const clampPingPaddleCenter = (value) => Math.max(PING_PADDLE_HALF_X01, Math.min(1 - PING_PADDLE_HALF_X01, value))
@@ -2800,21 +2799,170 @@ const createPingServeBall = (direction = 1) => {
   }
 }
 
-function PingPongCanvas({ user, partnerId, game, isHost, onPaddle, onHostUpdate, onRematch }) {
+const createPingRallyState = ({ fromUid, toUid, fromPaddleX = 0.5, x = 0.5, y = 0.5, vx, vy, leadMs = PING_RALLY_LEAD_MS }) => ({
+  id: `rally_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+  fromUid,
+  toUid,
+  fromPaddleX: clampPingPaddleCenter(fromPaddleX),
+  x,
+  y,
+  vx,
+  vy,
+  speed: Math.sqrt(vx * vx + vy * vy),
+  startedAtMs: Date.now() + leadMs,
+})
+
+function PingPongCanvas({ user, partnerId, game, onRallyUpdate, onRematch }) {
   const canvasRef = useRef(null)
-  const lastHostSendRef = useRef(0)
-  const lastFrameRef = useRef(0)
-  const lastPaddleSendRef = useRef({ at: 0, value: null })
-  const ballRef = useRef(game?.ball || createPingServeBall(-1))
-  const paddlesRef = useRef(game?.paddles || {})
+  const lastPaddleMoveRef = useRef({ at: 0, value: 0.5 })
+  const myPaddleXRef = useRef(0.5)
+  const opponentPaddleXRef = useRef(0.5)
+  const rallyRef = useRef(game?.rally || null)
   const scoresRef = useRef(game?.scores || {})
+  const ballDisplayRef = useRef(game?.rally ? { x: game.rally.x, y: game.rally.y, vx: game.rally.vx, vy: game.rally.vy } : null)
+  const handledRallyIdRef = useRef(null)
+  const updateInFlightRef = useRef(false)
   const clamp01 = (value) => Math.max(0, Math.min(1, value))
+  const requesterId = game?.requesterId
+  const responderId = game?.responderId
+  const iAmRequester = requesterId === user.uid
+  const opponentUid = iAmRequester ? responderId : requesterId
+
+  const bounceOffPaddle = (ballX, paddleCenter, direction, currentVx, currentVy) => {
+    const offset = Math.max(-1, Math.min(1, (ballX - paddleCenter) / PING_PADDLE_HALF_X01))
+    const currentSpeed = Math.max(PING_MIN_BALL_SPEED, Math.hypot(currentVx, currentVy))
+    const boostedSpeed = Math.min(PING_MAX_BALL_SPEED, currentSpeed * PING_BOUNCE_ACCEL)
+    const nextXRatio = Math.max(
+      -0.84,
+      Math.min(0.84, (currentVx / currentSpeed) * 0.35 + offset * 0.6),
+    )
+    const nextVx = boostedSpeed * nextXRatio
+    const nextVy = Math.sqrt(Math.max(0.00005, boostedSpeed * boostedSpeed - nextVx * nextVx)) * direction
+    return { vx: nextVx, vy: nextVy }
+  }
+
+  const projectRally = useCallback((rally, nowMs) => {
+    if (!rally) return { ball: null, reachedReceiver: false, waiting: true }
+
+    let x = typeof rally.x === "number" ? rally.x : 0.5
+    let y = typeof rally.y === "number" ? rally.y : 0.5
+    let vx = typeof rally.vx === "number" ? rally.vx : 0
+    let vy = typeof rally.vy === "number" ? rally.vy : 0
+
+    if (nowMs <= rally.startedAtMs) {
+      return { ball: { x, y, vx, vy }, reachedReceiver: false, waiting: true }
+    }
+
+    let remainingMs = Math.max(0, nowMs - rally.startedAtMs)
+    while (remainingMs > 0) {
+      const sliceMs = Math.min(remainingMs, 16.6667)
+      const deltaFrames = sliceMs / 16.6667
+
+      x += vx * deltaFrames
+      y += vy * deltaFrames
+
+      if (x <= PING_BALL_RADIUS_X01) {
+        x = PING_BALL_RADIUS_X01
+        vx = Math.abs(vx)
+      }
+      if (x >= 1 - PING_BALL_RADIUS_X01) {
+        x = 1 - PING_BALL_RADIUS_X01
+        vx = -Math.abs(vx)
+      }
+
+      if (rally.toUid === requesterId && vy > 0 && y >= PING_BOTTOM_CONTACT_Y01) {
+        return { ball: { x, y: PING_BOTTOM_CONTACT_Y01, vx, vy }, reachedReceiver: true, waiting: false }
+      }
+      if (rally.toUid === responderId && vy < 0 && y <= PING_TOP_CONTACT_Y01) {
+        return { ball: { x, y: PING_TOP_CONTACT_Y01, vx, vy }, reachedReceiver: true, waiting: false }
+      }
+
+      remainingMs -= sliceMs
+    }
+
+    return { ball: { x, y, vx, vy }, reachedReceiver: false, waiting: false }
+  }, [requesterId, responderId])
+
+  const resolveIncomingRally = useCallback(async (rally, ball) => {
+    if (!ball || !requesterId || !responderId || !opponentUid || updateInFlightRef.current) return
+
+    updateInFlightRef.current = true
+    try {
+      const myPaddleX = myPaddleXRef.current
+      const withinPaddle = Math.abs(ball.x - myPaddleX) <= PING_PADDLE_HALF_X01 + PING_BALL_RADIUS_X01 * 0.75
+
+      if (withinPaddle) {
+        const direction = user.uid === requesterId ? -1 : 1
+        const bounced = bounceOffPaddle(ball.x, myPaddleX, direction, ball.vx, ball.vy)
+        const nextRally = createPingRallyState({
+          fromUid: user.uid,
+          toUid: opponentUid,
+          fromPaddleX: myPaddleX,
+          x: ball.x,
+          y: user.uid === requesterId ? PING_BOTTOM_CONTACT_Y01 : PING_TOP_CONTACT_Y01,
+          vx: bounced.vx,
+          vy: bounced.vy,
+        })
+
+        await onRallyUpdate({
+          rally: nextRally,
+          status: "active",
+          winnerUid: null,
+        })
+        return
+      }
+
+      const scorerUid = rally.fromUid
+      const loserUid = rally.toUid
+      const nextScores = { ...(scoresRef.current || {}) }
+      nextScores[scorerUid] = (nextScores[scorerUid] || 0) + 1
+      const winnerUid = nextScores[scorerUid] >= PING_WINNING_SCORE ? scorerUid : null
+
+      const update = {
+        scores: nextScores,
+        status: winnerUid ? "ended" : "active",
+        winnerUid,
+        rally: null,
+      }
+
+      if (!winnerUid) {
+        const serveDirection = loserUid === requesterId ? 1 : -1
+        const serveBall = createPingServeBall(serveDirection)
+        const serveY = scorerUid === requesterId ? PING_BOTTOM_CONTACT_Y01 : PING_TOP_CONTACT_Y01
+        update.rally = createPingRallyState({
+          fromUid: scorerUid,
+          toUid: loserUid,
+          fromPaddleX: 0.5,
+          x: 0.5,
+          y: serveY,
+          vx: serveBall.vx,
+          vy: serveBall.vy,
+          leadMs: PING_RALLY_LEAD_MS + 320,
+        })
+      }
+
+      await onRallyUpdate(update)
+    } finally {
+      updateInFlightRef.current = false
+    }
+  }, [opponentUid, onRallyUpdate, requesterId, responderId, user.uid])
 
   useEffect(() => {
-    ballRef.current = game?.ball || createPingServeBall(-1)
-    paddlesRef.current = game?.paddles || {}
     scoresRef.current = game?.scores || {}
-  }, [game?.ball, game?.paddles, game?.scores])
+  }, [game?.scores])
+
+  useEffect(() => {
+    const rally = game?.rally || null
+    rallyRef.current = rally
+    handledRallyIdRef.current = null
+    updateInFlightRef.current = false
+
+    if (rally?.fromUid && rally.fromUid !== user.uid && typeof rally.fromPaddleX === "number") {
+      opponentPaddleXRef.current = clampPingPaddleCenter(rally.fromPaddleX)
+    }
+
+    ballDisplayRef.current = rally ? { x: rally.x, y: rally.y, vx: rally.vx, vy: rally.vy } : null
+  }, [game?.rally, user.uid])
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -2865,13 +3013,6 @@ function PingPongCanvas({ user, partnerId, game, isHost, onPaddle, onHostUpdate,
       ctx.stroke()
       ctx.setLineDash([])
 
-      const paddles = paddlesRef.current || {}
-      const requesterX = clampPingPaddleCenter(paddles[game.requesterId] ?? 0.5)
-      const responderX = clampPingPaddleCenter(paddles[game.responderId] ?? 0.5)
-      const iAmRequester = game.requesterId === user.uid
-      const myX = iAmRequester ? requesterX : responderX
-      const oppX = iAmRequester ? responderX : requesterX
-
       const centerToLeft = (center) => {
         const raw = center * w - PING_PADDLE_WIDTH / 2
         return Math.max(0, Math.min(w - PING_PADDLE_WIDTH, raw))
@@ -2896,34 +3037,36 @@ function PingPongCanvas({ user, partnerId, game, isHost, onPaddle, onHostUpdate,
         ctx.fillText(label, centerX * w, y === PING_TOP_Y ? y - 8 : y + PING_PADDLE_HEIGHT + 16)
       }
 
-      drawPaddle(oppX, PING_TOP_Y, "#38BDF8", "rgba(56, 189, 248, 0.65)", "Opponent")
-      drawPaddle(myX, PING_BOTTOM_Y, "#34D399", "rgba(52, 211, 153, 0.65)", "You")
+      drawPaddle(opponentPaddleXRef.current, PING_TOP_Y, "#38BDF8", "rgba(56, 189, 248, 0.65)", "Opponent")
+      drawPaddle(myPaddleXRef.current, PING_BOTTOM_Y, "#34D399", "rgba(52, 211, 153, 0.65)", "You")
 
-      const worldBall = ballRef.current || createPingServeBall(-1)
-      const displayY = iAmRequester ? worldBall.y : 1 - worldBall.y
-      ctx.save()
-      ctx.shadowColor = "rgba(250, 204, 21, 0.95)"
-      ctx.shadowBlur = 22
-      const ballGradient = ctx.createRadialGradient(
-        worldBall.x * w - 2,
-        displayY * h - 2,
-        1,
-        worldBall.x * w,
-        displayY * h,
-        PING_BALL_RADIUS,
-      )
-      ballGradient.addColorStop(0, "#FEF3C7")
-      ballGradient.addColorStop(1, "#F59E0B")
-      ctx.fillStyle = ballGradient
-      ctx.beginPath()
-      ctx.arc(worldBall.x * w, displayY * h, PING_BALL_RADIUS, 0, Math.PI * 2)
-      ctx.fill()
+      const worldBall = ballDisplayRef.current
+      if (worldBall) {
+        const displayY = iAmRequester ? worldBall.y : 1 - worldBall.y
+        ctx.save()
+        ctx.shadowColor = "rgba(250, 204, 21, 0.95)"
+        ctx.shadowBlur = 22
+        const ballGradient = ctx.createRadialGradient(
+          worldBall.x * w - 2,
+          displayY * h - 2,
+          1,
+          worldBall.x * w,
+          displayY * h,
+          PING_BALL_RADIUS,
+        )
+        ballGradient.addColorStop(0, "#FEF3C7")
+        ballGradient.addColorStop(1, "#F59E0B")
+        ctx.fillStyle = ballGradient
+        ctx.beginPath()
+        ctx.arc(worldBall.x * w, displayY * h, PING_BALL_RADIUS, 0, Math.PI * 2)
+        ctx.fill()
 
-      ctx.fillStyle = "rgba(255,255,255,0.18)"
-      ctx.beginPath()
-      ctx.arc(worldBall.x * w - 2, displayY * h - 2, 3, 0, Math.PI * 2)
-      ctx.fill()
-      ctx.restore()
+        ctx.fillStyle = "rgba(255,255,255,0.18)"
+        ctx.beginPath()
+        ctx.arc(worldBall.x * w - 2, displayY * h - 2, 3, 0, Math.PI * 2)
+        ctx.fill()
+        ctx.restore()
+      }
     }
 
     const loop = () => {
@@ -2933,140 +3076,55 @@ function PingPongCanvas({ user, partnerId, game, isHost, onPaddle, onHostUpdate,
 
     loop()
     return () => cancelAnimationFrame(raf)
-  }, [game?.requesterId, game?.responderId, user.uid])
+  }, [iAmRequester])
 
   useEffect(() => {
-    if (!isHost || game.status !== "active" || !game.requesterId || !game.responderId) return
-
-    const requesterId = game.requesterId
-    const responderId = game.responderId
-
-    const bounceOffPaddle = (ballX, paddleCenter, direction, currentVx, currentVy) => {
-      const offset = Math.max(-1, Math.min(1, (ballX - paddleCenter) / PING_PADDLE_HALF_X01))
-      const currentSpeed = Math.max(PING_MIN_BALL_SPEED, Math.hypot(currentVx, currentVy))
-      const boostedSpeed = Math.min(PING_MAX_BALL_SPEED, currentSpeed * PING_BOUNCE_ACCEL)
-      const nextXRatio = Math.max(
-        -0.84,
-        Math.min(0.84, (currentVx / currentSpeed) * 0.35 + offset * 0.6),
-      )
-      const nextVx = boostedSpeed * nextXRatio
-      const nextVy = Math.sqrt(Math.max(0.00005, boostedSpeed * boostedSpeed - nextVx * nextVx)) * direction
-      return {
-        vx: nextVx,
-        vy: nextVy,
-      }
-    }
-
-    const scorePoint = (scorerUid) => {
-      const nextScores = { ...(scoresRef.current || {}) }
-      nextScores[scorerUid] = (nextScores[scorerUid] || 0) + 1
-      scoresRef.current = nextScores
-
-      const nextBall = createPingServeBall(scorerUid === requesterId ? -1 : 1)
-      ballRef.current = nextBall
-      lastFrameRef.current = 0
-
-      const winnerUid = nextScores[scorerUid] >= PING_WINNING_SCORE ? scorerUid : null
-      onHostUpdate({
-        ball: nextBall,
-        scores: nextScores,
-        status: winnerUid ? "ended" : "active",
-        winnerUid,
-      })
-    }
+    if (game.status !== "active") return
 
     let raf = 0
-    const step = (now) => {
-      raf = requestAnimationFrame(step)
+    const tick = () => {
+      const rally = rallyRef.current
+      const projection = projectRally(rally, Date.now())
+      ballDisplayRef.current = projection.ball
 
-      if (!lastFrameRef.current) {
-        lastFrameRef.current = now
-        return
+      if (
+        rally &&
+        rally.toUid === user.uid &&
+        projection.reachedReceiver &&
+        handledRallyIdRef.current !== rally.id &&
+        !updateInFlightRef.current
+      ) {
+        handledRallyIdRef.current = rally.id
+        void resolveIncomingRally(rally, projection.ball)
       }
 
-      const deltaFrames = Math.max(0.8, Math.min(2.4, (now - lastFrameRef.current) / 16.6667))
-      lastFrameRef.current = now
-
-      const paddles = paddlesRef.current || {}
-      const requesterX = clampPingPaddleCenter(paddles[requesterId] ?? 0.5)
-      const responderX = clampPingPaddleCenter(paddles[responderId] ?? 0.5)
-      let { x, y, vx, vy } = ballRef.current || createPingServeBall(-1)
-
-      x += vx * deltaFrames
-      y += vy * deltaFrames
-
-      if (x <= PING_BALL_RADIUS_X01) {
-        x = PING_BALL_RADIUS_X01
-        vx = Math.abs(vx)
-      }
-      if (x >= 1 - PING_BALL_RADIUS_X01) {
-        x = 1 - PING_BALL_RADIUS_X01
-        vx = -Math.abs(vx)
-      }
-
-      if (vy > 0 && y + PING_BALL_RADIUS_Y01 >= PING_BOTTOM_CENTER_Y01 - PING_PADDLE_HEIGHT / PING_CANVAS_HEIGHT / 2) {
-        const withinPaddle = Math.abs(x - requesterX) <= PING_PADDLE_HALF_X01 + PING_BALL_RADIUS_X01 * 0.75
-        if (withinPaddle) {
-          y = PING_BOTTOM_CENTER_Y01 - PING_PADDLE_HEIGHT / PING_CANVAS_HEIGHT / 2 - PING_BALL_RADIUS_Y01
-          const bounced = bounceOffPaddle(x, requesterX, -1, vx, vy)
-          vx = bounced.vx
-          vy = bounced.vy
-        } else if (y >= 1 - PING_BALL_RADIUS_Y01) {
-          scorePoint(responderId)
-          return
-        }
-      }
-
-      if (vy < 0 && y - PING_BALL_RADIUS_Y01 <= PING_TOP_CENTER_Y01 + PING_PADDLE_HEIGHT / PING_CANVAS_HEIGHT / 2) {
-        const withinPaddle = Math.abs(x - responderX) <= PING_PADDLE_HALF_X01 + PING_BALL_RADIUS_X01 * 0.75
-        if (withinPaddle) {
-          y = PING_TOP_CENTER_Y01 + PING_PADDLE_HEIGHT / PING_CANVAS_HEIGHT / 2 + PING_BALL_RADIUS_Y01
-          const bounced = bounceOffPaddle(x, responderX, 1, vx, vy)
-          vx = bounced.vx
-          vy = bounced.vy
-        } else if (y <= PING_BALL_RADIUS_Y01) {
-          scorePoint(requesterId)
-          return
-        }
-      }
-
-      const nextBall = { x, y, vx, vy }
-      ballRef.current = nextBall
-
-      if (now - lastHostSendRef.current >= PING_SYNC_INTERVAL_MS) {
-        lastHostSendRef.current = now
-        onHostUpdate({ ball: nextBall })
-      }
+      raf = requestAnimationFrame(tick)
     }
-    raf = requestAnimationFrame(step)
-    return () => {
-      cancelAnimationFrame(raf)
-      lastFrameRef.current = 0
-    }
-  }, [isHost, game?.status, game?.requesterId, game?.responderId, onHostUpdate])
+
+    tick()
+    return () => cancelAnimationFrame(raf)
+  }, [game.status, game?.rally?.id, projectRally, resolveIncomingRally, user.uid])
 
   useEffect(() => {
     const canvas = canvasRef.current
     if (!canvas) return
 
-    const maybeSendPaddle = (clientX) => {
+    const maybeMovePaddle = (clientX) => {
       const rect = canvas.getBoundingClientRect()
       const raw = (clientX - rect.left) / rect.width
       const normalized = clampPingPaddleCenter(clamp01(raw))
       const now = performance.now()
-      const last = lastPaddleSendRef.current
-      const delta = last.value === null ? 1 : Math.abs(normalized - last.value)
+      const last = lastPaddleMoveRef.current
+      const delta = Math.abs(normalized - last.value)
 
-      if (delta < 0.01 && now - last.at < 80) return
-      if (now - last.at < 35 && delta < 0.05) return
+      if (delta < 0.006 && now - last.at < 20) return
 
-      lastPaddleSendRef.current = { at: now, value: normalized }
-      onPaddle(normalized)
+      lastPaddleMoveRef.current = { at: now, value: normalized }
+      myPaddleXRef.current = normalized
     }
 
     const onPointer = (e) => {
-      if (game.status !== "active") return
-      maybeSendPaddle(e.clientX)
+      maybeMovePaddle(e.clientX)
     }
 
     canvas.addEventListener("pointerdown", onPointer)
@@ -3075,7 +3133,7 @@ function PingPongCanvas({ user, partnerId, game, isHost, onPaddle, onHostUpdate,
       canvas.removeEventListener("pointerdown", onPointer)
       canvas.removeEventListener("pointermove", onPointer)
     }
-  }, [onPaddle, game.status])
+  }, [])
 
   return (
     <div>
@@ -3096,13 +3154,17 @@ function PingPongCanvas({ user, partnerId, game, isHost, onPaddle, onHostUpdate,
           background: "linear-gradient(180deg, #07111f, #0f1f35)",
           borderRadius: 12,
           touchAction: "none",
-          cursor: game.status === "active" ? "crosshair" : "default",
+          cursor: "crosshair",
           border: "1px solid rgba(148, 163, 184, 0.2)",
           boxShadow: "inset 0 1px 0 rgba(255,255,255,0.04), 0 12px 28px rgba(0,0,0,0.28)",
         }}
       />
       <div style={{ display: "flex", justifyContent: "space-between", gap: 12, marginTop: 8, fontSize: 12, opacity: 0.78 }}>
         <span>Drag or tap across the court to move your paddle.</span>
+        <span>Ball flight stays local between returns.</span>
+      </div>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, marginTop: 4, fontSize: 12, opacity: 0.68 }}>
+        <span>Firebase only syncs serves, returns, and scores.</span>
         <span>{game.status === "active" ? "First to 5 points wins." : "Ready for the next rally."}</span>
       </div>
       {game.status === "ended" && (

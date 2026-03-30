@@ -2037,6 +2037,10 @@ export const listenToPingPongGame = (chatRoomId, callback) => {
 const pingPongPaddleHalfWidth01 = 104 / 520 / 2
 const pingPongMinPaddleCenter01 = pingPongPaddleHalfWidth01
 const pingPongMaxPaddleCenter01 = 1 - pingPongPaddleHalfWidth01
+const pingPongPaddleHeight01 = 12 / 320
+const pingPongBallRadiusY01 = 8 / 320
+const pingPongBottomContactY01 = (320 - 26 - 12 + 12 / 2) / 320 - pingPongPaddleHeight01 / 2 - pingPongBallRadiusY01
+const pingPongRallyLeadMs = 140
 
 const createPingPongServeBall = (direction = 1) => {
   const horizontalDirection = Math.random() >= 0.5 ? 1 : -1
@@ -2048,24 +2052,33 @@ const createPingPongServeBall = (direction = 1) => {
   }
 }
 
+const createPingPongRally = ({ fromUid, toUid, fromPaddleX = 0.5, x = 0.5, y = 0.5, vx, vy, leadMs = pingPongRallyLeadMs }) => ({
+  id: `rally_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+  fromUid,
+  toUid,
+  fromPaddleX: Math.max(pingPongMinPaddleCenter01, Math.min(pingPongMaxPaddleCenter01, Number(fromPaddleX) || 0.5)),
+  x,
+  y,
+  vx,
+  vy,
+  speed: Math.sqrt(vx * vx + vy * vy),
+  startedAtMs: Date.now() + leadMs,
+})
+
 export const sendPingPongRequest = async (chatRoomId, requesterId, responderId) => {
   const gameRef = doc(db, "chatRooms", chatRoomId, "games", "pingPong")
-  await setDoc(
-    gameRef,
-    {
-      status: "request",
-      requesterId,
-      responderId,
-      createdAt: serverTimestamp(),
-      scores: {},
-      hostUid: requesterId,
-      ball: createPingPongServeBall(-1),
-      paddles: {},
-      lastUpdateAt: serverTimestamp(),
-      winnerUid: null,
-    },
-    { merge: true },
-  )
+  await setDoc(gameRef, {
+    status: "request",
+    requesterId,
+    responderId,
+    createdAt: serverTimestamp(),
+    startedAt: null,
+    endedAt: null,
+    scores: {},
+    winnerUid: null,
+    rally: null,
+    lastUpdateAt: serverTimestamp(),
+  })
 }
 
 export const acceptPingPongRequest = async (chatRoomId, responderId) => {
@@ -2074,13 +2087,22 @@ export const acceptPingPongRequest = async (chatRoomId, responderId) => {
   if (!snap.exists()) return
   const data = snap.data()
   if (data.status !== "request" || data.responderId !== responderId) return
+  const serveBall = createPingPongServeBall(-1)
   await updateDoc(gameRef, {
     status: "active",
     startedAt: serverTimestamp(),
-    paddles: {
-      [data.requesterId]: 0.5,
-      [data.responderId]: 0.5,
-    },
+    scores: {},
+    winnerUid: null,
+    rally: createPingPongRally({
+      fromUid: data.requesterId,
+      toUid: data.responderId,
+      fromPaddleX: 0.5,
+      x: 0.5,
+      y: pingPongBottomContactY01,
+      vx: serveBall.vx,
+      vy: -Math.abs(serveBall.vy),
+      leadMs: pingPongRallyLeadMs + 220,
+    }),
   })
 }
 
@@ -2090,18 +2112,7 @@ export const declinePingPongRequest = async (chatRoomId, responderId) => {
   if (!snap.exists()) return
   const data = snap.data()
   if (data.status !== "request" || data.responderId !== responderId) return
-  await updateDoc(gameRef, { status: "declined", endedAt: serverTimestamp() })
-}
-
-export const updatePingPongPaddle = async (chatRoomId, uid, y01) => {
-  const gameRef = doc(db, "chatRooms", chatRoomId, "games", "pingPong")
-  const rawValue = Number(y01)
-  const normalized = Number.isFinite(rawValue) ? rawValue : 0.5
-  const clamped = Math.max(pingPongMinPaddleCenter01, Math.min(pingPongMaxPaddleCenter01, normalized))
-  await updateDoc(gameRef, {
-    [`paddles.${uid}`]: clamped,
-    lastUpdateAt: serverTimestamp(),
-  })
+  await updateDoc(gameRef, { status: "declined", rally: null, endedAt: serverTimestamp() })
 }
 
 export const hostUpdatePingPongState = async (chatRoomId, state) => {
@@ -2117,23 +2128,29 @@ export const startPingPongRematch = async (chatRoomId) => {
   const snap = await getDoc(gameRef)
   if (!snap.exists()) return
   const data = snap.data()
+  const serveBall = createPingPongServeBall(-1)
   await updateDoc(gameRef, {
     status: "active",
-    ball: createPingPongServeBall(Math.random() >= 0.5 ? 1 : -1),
-    paddles: {
-      [data.requesterId]: 0.5,
-      [data.responderId]: 0.5,
-    },
     scores: {},
     winnerUid: null,
     startedAt: serverTimestamp(),
     endedAt: null,
+    rally: createPingPongRally({
+      fromUid: data.requesterId,
+      toUid: data.responderId,
+      fromPaddleX: 0.5,
+      x: 0.5,
+      y: pingPongBottomContactY01,
+      vx: serveBall.vx,
+      vy: -Math.abs(serveBall.vy),
+      leadMs: pingPongRallyLeadMs + 260,
+    }),
   })
 }
 
 export const closePingPongGame = async (chatRoomId) => {
   const gameRef = doc(db, "chatRooms", chatRoomId, "games", "pingPong")
-  await updateDoc(gameRef, { status: "idle", endedAt: serverTimestamp() })
+  await updateDoc(gameRef, { status: "idle", rally: null, endedAt: serverTimestamp() })
 }
 
 export const playBingoNumber = async (chatRoomId, playerId, numberValue) => {
